@@ -106,7 +106,7 @@ export default function Home() {
                 functionName: "get_status",
                 args: [],
             });
-            setEscrowState(result as EscrowState);
+            setEscrowState(result as unknown as EscrowState);
             setTxStatus("idle");
             setTxMsg("");
         } catch (e: unknown) {
@@ -125,6 +125,7 @@ export default function Home() {
                 address: contractAddr as `0x${string}`,
                 functionName: "mark_complete",
                 args: [],
+                value: BigInt(0),
             });
             setTxHash(hash as string);
             setTxStatus("success");
@@ -145,6 +146,7 @@ export default function Home() {
                 address: contractAddr as `0x${string}`,
                 functionName: "release_payment",
                 args: [],
+                value: BigInt(0),
             });
             setTxHash(hash as string);
             setTxStatus("success");

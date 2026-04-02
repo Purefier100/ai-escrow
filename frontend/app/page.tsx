@@ -117,68 +117,21 @@ export default function Home() {
     }, [connectWallet]);
 
     const deployEscrow = async () => {
-        if (!wallet) {
-            alert("Please connect your wallet first.");
-            return;
-        }
-
-        if (!freelancer || !amount) {
-            alert("Please fill in all fields.");
-            return;
-        }
-
+        if (!wallet) { alert("Please connect your wallet first."); return; }
+        if (!freelancer || !amount) { alert("Please fill in all fields."); return; }
         setTxStatus("pending");
         setTxMsg("Deploying contract to GenLayer...");
-
         try {
             await switchToGenLayer();
-
             const client = getGenLayerClient(wallet);
-
-            // 🔥 Step 1: deploy
             const hash = await client.deployContract({
                 code: getContractCode(),
                 args: [freelancer, BigInt(amount)],
                 leaderOnly: true,
             });
-
             setTxHash(hash as string);
-            setTxMsg("Waiting for confirmation...");
-
-            // 🔥 Poll for receipt
-            // 🔥 Poll for receipt
-            let receipt = null;
-
-            for (let i = 0; i < 30; i++) {
-                try {
-                    receipt = await client.getTransactionReceipt({
-                        hash: hash as `0x${string}`,
-                    });
-
-                    // ✅ Accept any successful receipt
-                    if (receipt) {
-                        break;
-                    }
-                } catch (e) {
-                    // not ready yet
-                }
-
-                setTxMsg(`Waiting for confirmation... (${i + 1}/30)`);
-                await new Promise((res) => setTimeout(res, 3000));
-            }
-
-            if (!receipt) {
-                throw new Error("Deployment taking longer than expected. Try again or wait.");
-            }
-
-            // Use contractAddress if available, otherwise use the tx hash
-            const deployedAddress = (receipt as any).contractAddress || contractAddr;
-
-            setContractAddr(deployedAddress);
-            localStorage.setItem("escrow_contract", deployedAddress);
             setTxStatus("success");
-            setTxMsg(`Contract deployed! Address: ${deployedAddress}`);
-
+            setTxMsg(`Contract deployed! TX Hash: ${hash}. Go to Manage tab and check your contract on GenLayer Studio.`);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Deployment failed");

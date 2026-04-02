@@ -27,11 +27,13 @@ interface EscrowState {
 const short = (addr: string) =>
     addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
 
-const getGenLayerClient = (walletAddress: string) => {
-    return createClient({
+const getGenLayerClient = async (walletAddress: string) => {
+    const client = createClient({
         chain: studionet,
         account: walletAddress as `0x${string}`,
     });
+    await client.connect("Genlayer Studio Network");
+    return client;
 };
 
 export default function Home() {
@@ -80,7 +82,7 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Deploying contract to GenLayer...");
         try {
-            const client = getGenLayerClient(wallet);
+            const client = await getGenLayerClient(wallet);
             const hash = await client.deployContract({
                 code: getContractCode(),
                 args: [freelancer, parseInt(amount)],
@@ -100,7 +102,7 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Fetching contract state...");
         try {
-            const client = getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
+            const client = await getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
             const result = await client.readContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "get_status",
@@ -120,7 +122,7 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Sending mark_complete transaction...");
         try {
-            const client = getGenLayerClient(wallet);
+            const client = await getGenLayerClient(wallet);
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "mark_complete",
@@ -141,7 +143,7 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Sending release_payment transaction...");
         try {
-            const client = getGenLayerClient(wallet);
+            const client = await getGenLayerClient(wallet);
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "release_payment",

@@ -130,7 +130,7 @@ export default function Home() {
             const client = getGenLayerClient(wallet);
             const hash = await client.deployContract({
                 code: getContractCode(),
-                args: [freelancer, BigInt(amount)],
+                args: [freelancer, BigInt(amount), description],
                 leaderOnly: true,
             });
             setTxHash(hash as string);
@@ -182,6 +182,8 @@ export default function Home() {
 
     const markComplete = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
+        const workUrl = prompt("Enter the URL where your completed work can be viewed:");
+        if (!workUrl) return;
         setTxStatus("pending");
         setTxMsg("Sending mark_complete transaction...");
         try {
@@ -190,7 +192,7 @@ export default function Home() {
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "mark_complete",
-                args: [],
+                args: [workUrl],
                 value: BigInt(0),
             });
             setTxHash(hash as string);
@@ -459,8 +461,7 @@ export default function Home() {
 }
 
 function getContractCode() {
-    return `# v0.2.16
-# { "Depends": "py-genlayer:latest" }
+    return `# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
 
@@ -470,23 +471,29 @@ class Escrow(gl.Contract):
     amount: u128
     completed: bool
     paid: bool
+    description: str
+    work_url: str
 
-    def __init__(self, freelancer: str, amount: u128):
+    def __init__(self, freelancer: str, amount: u128, description: str):
         self.client = gl.message.sender_address
         self.freelancer = Address(freelancer)
         self.amount = amount
         self.completed = False
         self.paid = False
+        self.description = description
+        self.work_url = ""
 
     @gl.public.write
-    def mark_complete(self):
+    def mark_complete(self, work_url: str):
         assert gl.message.sender_address == self.freelancer, "Only freelancer can mark complete"
+        self.work_url = work_url
         self.completed = True
 
     @gl.public.write
     def release_payment(self):
         assert gl.message.sender_address == self.client, "Only client can release"
         assert self.completed == True, "Work not completed"
+        assert self._ai_verify_work(), "AI could not verify work meets requirements"
         self.paid = True
 
     @gl.public.view
@@ -497,6 +504,32 @@ class Escrow(gl.Contract):
             "amount": int(self.amount),
             "completed": self.completed,
             "paid": self.paid,
+            "description": self.description,
+            "work_url": self.work_url,
         }
+
+    def _ai_verify_work(self) -> bool:
+        if not self.work_url:
+            return False
+
+        description = self.description
+        work_url = self.work_url
+
+        def check():
+            web_data = gl.get_webpage(work_url, mode="text")
+            result = gl.exec_prompt(
+                f"""
+                Job description: {description}
+                Work submitted URL: {work_url}
+                Content found at URL: {web_data}
+
+                Does the submitted work reasonably fulfill the job description?
+                Answer ONLY with YES or NO, nothing else.
+                """
+            )
+            return result.strip().upper()[:3]
+
+        verdict = gl.eq_principle_strict_eq(check)
+        return verdict == "YES"
 `;
 }

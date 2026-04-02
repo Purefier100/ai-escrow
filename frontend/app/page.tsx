@@ -37,6 +37,7 @@ const getGenLayerClient = (walletAddress: string) => {
 export default function Home() {
     const [tab, setTab] = useState<Tab>("create");
     const [wallet, setWallet] = useState<string>("");
+    const [showWalletMenu, setShowWalletMenu] = useState(false);
     const [freelancer, setFreelancer] = useState("");
     const [amount, setAmount] = useState("");
     const [description, setDescription] = useState("");
@@ -46,6 +47,27 @@ export default function Home() {
     const [txHash, setTxHash] = useState("");
     const [txMsg, setTxMsg] = useState("");
 
+    const switchToGenLayer = async () => {
+        try {
+            await window.ethereum.request({
+                method: "wallet_switchEthereumChain",
+                params: [{ chainId: "0xF22F" }],
+            });
+        } catch (switchError: any) {
+            if (switchError.code === 4902) {
+                await window.ethereum.request({
+                    method: "wallet_addEthereumChain",
+                    params: [{
+                        chainId: "0xF22F",
+                        chainName: "Genlayer Studio Network",
+                        rpcUrls: ["https://studio.genlayer.com/api"],
+                        nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+                    }],
+                });
+            }
+        }
+    };
+
     const connectWallet = useCallback(async () => {
         if (typeof window === "undefined" || !window.ethereum) {
             alert("MetaMask not found. Please install it.");
@@ -54,30 +76,7 @@ export default function Home() {
         try {
             const p = new ethers.BrowserProvider(window.ethereum);
             await p.send("eth_requestAccounts", []);
-            // Switch to GenLayer Studio Network
-            try {
-                await window.ethereum.request({
-                    method: "wallet_switchEthereumChain",
-                    params: [{ chainId: "0xF22F" }],
-                });
-            } catch (switchError: any) {
-                // Only add network if it doesn't exist (error code 4902)
-                if (switchError.code === 4902) {
-                    try {
-                        await window.ethereum.request({
-                            method: "wallet_addEthereumChain",
-                            params: [{
-                                chainId: "0xF22F",
-                                chainName: "Genlayer Studio Network",
-                                rpcUrls: ["https://studio.genlayer.com/api"],
-                                nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-                            }],
-                        });
-                    } catch (addError) {
-                        console.error("Failed to add network:", addError);
-                    }
-                }
-            }
+            await switchToGenLayer();
             const signer = await p.getSigner();
             const addr = await signer.getAddress();
             setWallet(addr);
@@ -86,15 +85,28 @@ export default function Home() {
         }
     }, []);
 
+    const disconnectWallet = () => {
+        setWallet("");
+        setShowWalletMenu(false);
+        setEscrowState(null);
+    };
+
     useEffect(() => {
         if (typeof window !== "undefined" && window.ethereum) {
             window.ethereum
                 .request({ method: "eth_accounts" })
                 .then((accounts: string[]) => {
-                    if (accounts.length > 0) {
-                        connectWallet();
-                    }
+                    if (accounts.length > 0) connectWallet();
                 });
+
+            window.ethereum.on("accountsChanged", (accounts: string[]) => {
+                if (accounts.length === 0) disconnectWallet();
+                else connectWallet();
+            });
+
+            window.ethereum.on("chainChanged", () => {
+                window.location.reload();
+            });
         }
     }, [connectWallet]);
 
@@ -104,7 +116,8 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Deploying contract to GenLayer...");
         try {
-            const client = await getGenLayerClient(wallet);
+            await switchToGenLayer();
+            const client = getGenLayerClient(wallet);
             const hash = await client.deployContract({
                 code: getContractCode(),
                 args: [freelancer, parseInt(amount)],
@@ -124,7 +137,7 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Fetching contract state...");
         try {
-            const client = await getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
+            const client = getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
             const result = await client.readContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "get_status",
@@ -144,7 +157,8 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Sending mark_complete transaction...");
         try {
-            const client = await getGenLayerClient(wallet);
+            await switchToGenLayer();
+            const client = getGenLayerClient(wallet);
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "mark_complete",
@@ -165,7 +179,8 @@ export default function Home() {
         setTxStatus("pending");
         setTxMsg("Sending release_payment transaction...");
         try {
-            const client = await getGenLayerClient(wallet);
+            await switchToGenLayer();
+            const client = getGenLayerClient(wallet);
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
                 functionName: "release_payment",
@@ -204,12 +219,45 @@ export default function Home() {
                             POWERED BY GENLAYER
                         </span>
                     </div>
-                    <button
-                        onClick={connectWallet}
-                        className={`font-mono text-sm px-4 py-2 rounded-lg transition-all ${wallet ? "bg-[#00ff8815] text-[#00ff88] border border-[#00ff8830]" : "btn-primary"}`}
-                    >
-                        {wallet ? `⬡ ${short(wallet)}` : "Connect Wallet"}
-                    </button>
+
+                    {/* Wallet button with dropdown */}
+                    <div className="relative">
+                        {wallet ? (
+                            <>
+                                <button
+                                    onClick={() => setShowWalletMenu(!showWalletMenu)}
+                                    className="bg-[#00ff8815] text-[#00ff88] border border-[#00ff8830] font-mono text-sm px-4 py-2 rounded-lg transition-all flex items-center gap-2"
+                                >
+                                    <span>⬡</span>
+                                    <span>{short(wallet)}</span>
+                                    <span className="text-xs opacity-50">▾</span>
+                                </button>
+                                {showWalletMenu && (
+                                    <div className="absolute right-0 top-12 bg-[#0f0f1a] border border-[#1a1a2e] rounded-xl p-2 w-48 z-50 shadow-xl">
+                                        <div className="px-3 py-2 text-xs font-mono text-[#505060] border-b border-[#1a1a2e] mb-1">
+                                            {short(wallet)}
+                                        </div>
+                                        <button
+                                            onClick={() => { navigator.clipboard.writeText(wallet); setShowWalletMenu(false); }}
+                                            className="w-full text-left px-3 py-2 text-xs font-mono text-[#808090] hover:text-white hover:bg-[#1a1a2e] rounded-lg transition-all"
+                                        >
+                                            📋 Copy Address
+                                        </button>
+                                        <button
+                                            onClick={disconnectWallet}
+                                            className="w-full text-left px-3 py-2 text-xs font-mono text-[#ff4444] hover:bg-[#ff444410] rounded-lg transition-all"
+                                        >
+                                            ⏻ Disconnect
+                                        </button>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <button onClick={connectWallet} className="btn-primary font-mono text-sm px-4 py-2 rounded-lg">
+                                Connect Wallet
+                            </button>
+                        )}
+                    </div>
                 </div>
             </header>
 
@@ -413,5 +461,15 @@ class Escrow(gl.Contract):
         assert gl.message.sender_address == self.client, "Only client can release"
         assert self.completed == True, "Work not completed"
         self.paid = True
+
+    @gl.public.view
+    def get_status(self) -> dict:
+        return {
+            "client": self.client.as_hex,
+            "freelancer": self.freelancer.as_hex,
+            "amount": int(self.amount),
+            "completed": self.completed,
+            "paid": self.paid,
+        }
 `;
 }

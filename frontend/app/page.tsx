@@ -12,6 +12,7 @@ import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
 const CONTRACT_ADDRESS = "0x8273c7a2ea75841cFA4a3ff5bF8CC05dc3983649";
+const JOB_BOARD_ADDRESS = "0x88f7FF47EdB00c583c957454d57A42c31d9DfDE4" as `0x${string}`;
 
 type Tab = "listings" | "create" | "manage" | "history" | "about";
 type TxStatus = "idle" | "pending" | "success" | "error";
@@ -38,15 +39,13 @@ interface SavedContract {
 }
 
 interface JobListing {
-    id: string;
+    id: number;
     title: string;
     description: string;
-    budget: string;
+    budget: number;
     skills: string[];
     client: string;
-    contractAddr?: string;
-    postedAt: number;
-    status: "open" | "assigned" | "completed";
+    escrow: string;
 }
 
 const short = (addr: string) => addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
@@ -55,7 +54,6 @@ const getGenLayerClient = (walletAddress: string) =>
     createClient({ chain: studionet, account: walletAddress as `0x${string}` });
 
 const CONTRACTS_KEY = "escrow_contracts_v3";
-const LISTINGS_KEY = "escrow_job_listings_v1";
 
 const getSavedContracts = (): SavedContract[] => {
     try { return JSON.parse(localStorage.getItem(CONTRACTS_KEY) || "[]"); } catch { return []; }
@@ -73,15 +71,6 @@ const updateContractStatus = (address: string, status: SavedContract["status"]) 
         normalizeAddr(c.address) === normalizeAddr(address) ? { ...c, status } : c
     );
     localStorage.setItem(CONTRACTS_KEY, JSON.stringify(all));
-};
-
-const getJobListings = (): JobListing[] => {
-    try { return JSON.parse(localStorage.getItem(LISTINGS_KEY) || "[]"); } catch { return []; }
-};
-
-const saveJobListing = (listing: JobListing) => {
-    const existing = getJobListings();
-    localStorage.setItem(LISTINGS_KEY, JSON.stringify([listing, ...existing].slice(0, 100)));
 };
 
 export default function Home() {
@@ -116,9 +105,36 @@ export default function Home() {
     }, [wallet, escrowState]);
 
     useEffect(() => {
-        const saved = getJobListings();
-        setJobListings(saved);
-    }, []);
+        const loadJobs = async () => {
+            try {
+                const client = getGenLayerClient(
+                    wallet || "0x0000000000000000000000000000000000000000"
+                );
+
+                const rawJobs = await client.readContract({
+                    address: JOB_BOARD_ADDRESS,
+                    functionName: "get_jobs",
+                    args: [],
+                });
+
+                const formatted = (rawJobs as any[]).map((job) => ({
+                    id: Number(job.id),
+                    title: job.title,
+                    description: job.description,
+                    budget: Number(job.budget),
+                    client: job.client,
+                    escrow: job.escrow,   // ✅ ADD
+                    skills: job.skills ? job.skills.split(",") : [],
+                }));
+
+                setJobListings(formatted);
+            } catch (err) {
+                console.error("Failed to load jobs", err);
+            }
+        };
+
+        loadJobs();
+    }, [wallet]);
 
     useEffect(() => {
         if (!wallet) return;
@@ -186,39 +202,99 @@ export default function Home() {
     const postJobListing = async () => {
         if (!wallet) { alert("Connect wallet first"); return; }
         if (!jobTitle || !description || !amount) { alert("Fill all fields"); return; }
+
         setTxStatus("pending");
-        setTxMsg("Deploying escrow contract for this job...");
+        setTxMsg("Deploying escrow contract...");
+
         try {
             await switchToGenLayer();
             const client = getGenLayerClient(wallet);
+
+
             const hash = await client.deployContract({
                 code: getContractCode(),
                 args: ["0x0000000000000000000000000000000000000000", BigInt(amount), description],
                 leaderOnly: true,
             });
-            setTxHash(hash as string);
-            const contractAddress = await getContractFromReceipt(hash as string);
-            const newListing: JobListing = {
-                id: Date.now().toString(),
-                title: jobTitle,
-                description,
-                budget: amount,
-                skills: jobSkills.split(",").map(s => s.trim()).filter(Boolean),
-                client: wallet,
-                contractAddr: contractAddress,
-                postedAt: Date.now(),
-                status: "open",
-            };
-            saveJobListing(newListing);
-            setJobListings(prev => [newListing, ...prev]);
-            saveContract({ address: contractAddress, role: "client", wallet, description, amount, status: "active", savedAt: Date.now() });
+
+            const contractAddress = await getContractFromReceipt(hash as string) as `0x${string}`;
+
+
+            await (client.writeContract as any)({
+                address: JOB_BOARD_ADDRESS,
+                functionName: "post_job",
+                args: [
+                    jobTitle,
+                    description,
+                    BigInt(Number(amount)),
+                    jobSkills,
+                    contractAddress
+                ],
+            });
+
             setTxStatus("success");
-            setTxMsg(`✓ Job posted! Contract: ${short(contractAddress)}`);
-            setJobTitle(""); setDescription(""); setAmount(""); setJobSkills("");
-            setPostingJob(false);
-        } catch (e: unknown) {
+            setTxMsg("✓ Job posted on-chain!");
+
+
+            const rawJobs = await client.readContract({
+                address: JOB_BOARD_ADDRESS,
+                functionName: "get_jobs",
+                args: [],
+            });
+
+            const formatted = (rawJobs as any[]).map((job) => ({
+                id: Number(job.id),
+                title: job.title,
+                description: job.description,
+                budget: Number(job.budget),
+                client: job.client,
+                escrow: job.escrow,
+                skills: job.skills ? job.skills.split(",") : [],
+            }));
+
+            setJobListings(formatted);
+
+        } catch (e: any) {
             setTxStatus("error");
-            setTxMsg(e instanceof Error ? e.message : "Failed to post job");
+            setTxMsg(e.message || "Failed");
+        }
+    };
+
+    const deleteJob = async (jobId: number) => {
+        if (!wallet) return alert("Connect wallet");
+
+        try {
+            const client = getGenLayerClient(wallet);
+
+            await (client.writeContract as any)({
+                address: JOB_BOARD_ADDRESS,
+                functionName: "delete_job",
+                args: [jobId],
+            });
+
+            alert("Job deleted ✅");
+
+
+            const jobs = await client.readContract({
+                address: JOB_BOARD_ADDRESS,
+                functionName: "get_jobs",
+                args: [],
+            });
+
+            const formatted = (jobs as any[]).map((job) => ({
+                id: Number(job.id),
+                title: job.title,
+                description: job.description,
+                budget: Number(job.budget),
+                client: job.client,
+                escrow: job.escrow,
+                skills: job.skills ? job.skills.split(",") : [],
+            }));
+
+            setJobListings(formatted);
+        } catch (err) {
+            console.error(err);
+            alert("Failed to delete job");
         }
     };
 
@@ -439,7 +515,7 @@ export default function Home() {
                     {tab === "listings" && (
                         <div className="space-y-6">
                             <div className="flex items-center justify-between">
-                                <h2 className="font-mono text-sm text-[#505060] tracking-wider">AVAILABLE JOBS ({jobListings.filter(l => l.status === "open").length})</h2>
+                                <h2 className="font-mono text-sm text-[#505060] tracking-wider">AVAILABLE JOBS ({jobListings.length})</h2>
                                 {wallet && (
                                     <button onClick={() => setPostingJob(!postingJob)} className="btn-primary px-4 py-2 rounded-lg font-mono text-xs">
                                         {postingJob ? "✕ Cancel" : "⊕ Post a Job"}
@@ -475,7 +551,7 @@ export default function Home() {
                                 </div>
                             )}
 
-                            {jobListings.filter(l => l.status === "open").length === 0 && !postingJob && (
+                            {jobListings.length === 0 && !postingJob && (
                                 <div className="card rounded-xl p-16 text-center">
                                     <div className="text-5xl mb-4">⬡</div>
                                     <p className="font-mono text-[#505060] text-sm mb-2">No jobs listed yet</p>
@@ -484,7 +560,7 @@ export default function Home() {
                             )}
 
                             <div className="space-y-4">
-                                {jobListings.filter(l => l.status === "open").map((job) => (
+                                {jobListings.map((job) => (
                                     <div key={job.id} className="card rounded-xl p-6 glow-border space-y-3">
                                         <div className="flex items-start justify-between gap-4">
                                             <div>
@@ -493,13 +569,18 @@ export default function Home() {
                                             </div>
                                             <div className="text-right shrink-0">
                                                 <div className="font-mono text-[#00ff88] font-bold text-lg">{job.budget} GEN</div>
-                                                <div className="text-xs text-[#505060]">{new Date(job.postedAt).toLocaleDateString()}</div>
+                                                <div className="text-xs text-[#505060]">{"On-chain job"}</div>
                                             </div>
                                         </div>
-                                        {job.skills.length > 0 && (
+                                        {Array.isArray(job.skills) && job.skills.length > 0 && (
                                             <div className="flex flex-wrap gap-2">
-                                                {job.skills.map(s => (
-                                                    <span key={s} className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#00ff8810] border border-[#00ff8820] text-[#00ff88]">{s}</span>
+                                                {job.skills.map((s) => (
+                                                    <span
+                                                        key={s}
+                                                        className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#00ff8810] border border-[#00ff8820] text-[#00ff88]"
+                                                    >
+                                                        {s}
+                                                    </span>
                                                 ))}
                                             </div>
                                         )}
@@ -509,20 +590,25 @@ export default function Home() {
                                                 <button
                                                     className="btn-primary px-4 py-2 rounded-lg font-mono text-xs"
                                                     onClick={() => {
-                                                        if (job.contractAddr) {
-                                                            setContractAddr(job.contractAddr);
-                                                            setEscrowState(null);
-                                                            setTab("manage");
-                                                        } else {
-                                                            alert("This job doesn't have a contract yet. Contact the client.");
-                                                        }
+                                                        setContractAddr(job.escrow);
+                                                        setEscrowState(null);
+                                                        setTab("manage");
                                                     }}
                                                 >
-                                                    Apply for this Job →
+                                                    Go to Manage →
                                                 </button>
                                             )}
                                             {wallet && normalizeAddr(wallet) === normalizeAddr(job.client) && (
-                                                <span className="text-xs font-mono text-[#505060]">Your listing</span>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xs font-mono text-[#505060]">Your listing</span>
+
+                                                    <button
+                                                        onClick={() => deleteJob(job.id)}
+                                                        className="text-xs font-mono text-[#ff4444] border border-[#ff444440] px-2 py-1 rounded hover:bg-[#ff444410]"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </div>
                                             )}
                                         </div>
                                     </div>
@@ -747,7 +833,16 @@ export default function Home() {
                                                         {c.description && <p className="text-xs text-[#505060] truncate">{c.description}</p>}
                                                         <p className="text-xs text-[#404050] mt-1">{new Date(c.savedAt).toLocaleDateString()}{c.amount ? ` · ${c.amount} GEN` : ""}</p>
                                                     </div>
-                                                    <button onClick={() => { setContractAddr(c.address); setEscrowState(null); setTab("manage"); }} className="btn-secondary px-3 py-2 rounded-lg font-mono text-xs shrink-0">Manage →</button>
+                                                    <button
+                                                        className="btn-primary px-4 py-2 rounded-lg font-mono text-xs"
+                                                        onClick={() => {
+                                                            setContractAddr(c.address);
+                                                            setEscrowState(null);
+                                                            setTab("manage");
+                                                        }}
+                                                    >
+                                                        Apply for this Job →
+                                                    </button>
                                                 </div>
                                             ))}
                                         </div>
@@ -778,20 +873,22 @@ export default function Home() {
                     )}
                 </div>
 
-                {txStatus !== "idle" && (
-                    <div className={`fixed bottom-6 right-6 max-w-sm p-4 rounded-xl font-mono text-sm border animate-fade-up z-50 ${txStatus === "pending" ? "bg-[#0f0f1a] border-[#ffa50040] text-[#ffa500]" : txStatus === "success" ? "bg-[#0f0f1a] border-[#00ff8840] text-[#00ff88]" : "bg-[#0f0f1a] border-[#ff444440] text-[#ff4444]"}`}>
-                        <div className="flex items-start gap-3">
-                            <span className="text-lg mt-0.5">{txStatus === "pending" ? "⟳" : txStatus === "success" ? "✓" : "✗"}</span>
-                            <div>
-                                <p className="text-xs opacity-60 mb-1">{txStatus === "pending" ? "PENDING" : txStatus === "success" ? "SUCCESS" : "ERROR"}</p>
-                                <p className="text-xs leading-relaxed break-all">{txMsg}</p>
-                                {txHash && <p className="text-xs opacity-50 mt-1 break-all">{short(txHash)}</p>}
+                {
+                    txStatus !== "idle" && (
+                        <div className={`fixed bottom-6 right-6 max-w-sm p-4 rounded-xl font-mono text-sm border animate-fade-up z-50 ${txStatus === "pending" ? "bg-[#0f0f1a] border-[#ffa50040] text-[#ffa500]" : txStatus === "success" ? "bg-[#0f0f1a] border-[#00ff8840] text-[#00ff88]" : "bg-[#0f0f1a] border-[#ff444440] text-[#ff4444]"}`}>
+                            <div className="flex items-start gap-3">
+                                <span className="text-lg mt-0.5">{txStatus === "pending" ? "⟳" : txStatus === "success" ? "✓" : "✗"}</span>
+                                <div>
+                                    <p className="text-xs opacity-60 mb-1">{txStatus === "pending" ? "PENDING" : txStatus === "success" ? "SUCCESS" : "ERROR"}</p>
+                                    <p className="text-xs leading-relaxed break-all">{txMsg}</p>
+                                    {txHash && <p className="text-xs opacity-50 mt-1 break-all">{short(txHash)}</p>}
+                                </div>
+                                <button onClick={() => { setTxStatus("idle"); setTxMsg(""); }} className="text-xs opacity-40 hover:opacity-80 ml-auto shrink-0">✕</button>
                             </div>
-                            <button onClick={() => { setTxStatus("idle"); setTxMsg(""); }} className="text-xs opacity-40 hover:opacity-80 ml-auto shrink-0">✕</button>
                         </div>
-                    </div>
-                )}
-            </main>
+                    )
+                }
+            </main >
 
             <footer className="border-t border-[#1a1a2e] mt-20 py-8">
                 <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -803,7 +900,7 @@ export default function Home() {
                     </div>
                 </div>
             </footer>
-        </div>
+        </div >
     );
 }
 
@@ -832,7 +929,11 @@ class Escrow(gl.Contract):
 
     @gl.public.write
     def mark_complete(self, work_url: str):
-        self.freelancer = gl.message.sender_address
+        if self.freelancer == Address("0x0000000000000000000000000000000000000000"):
+            self.freelancer = gl.message.sender_address
+
+        assert gl.message.sender_address == self.freelancer, "Not your job"
+
         self.work_url = work_url
         self.completed = True
 

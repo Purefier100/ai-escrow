@@ -139,26 +139,34 @@ export default function Home() {
             const hash = await client.deployContract({
                 code: getContractCode(),
                 args: [freelancer, BigInt(amount)],
-                leaderOnly: true, // faster + no hanging
+                leaderOnly: true,
             });
 
             setTxHash(hash as string);
             setTxMsg("Waiting for confirmation...");
 
-            // 🔥 Step 2: wait for receipt
-            const receipt = await client.waitForTransaction(hash as string);
+            // 🔥 Poll for receipt
+            let receipt = null;
 
-            // 🔥 Step 3: get contract address
-            const deployedAddress = receipt.contractAddress;
+            for (let i = 0; i < 10; i++) {
+                try {
+                    receipt = await client.getTransactionReceipt({
+                        hash: hash as `0x${string}`,
+                    });
 
-            if (!deployedAddress) {
-                throw new Error("No contract address returned");
+                    if (receipt) break;
+                } catch (e) { }
+
+                await new Promise((res) => setTimeout(res, 2000));
             }
 
-            // 🔥 Step 4: update frontend
-            setContractAddr(deployedAddress);
+            const deployedAddress = receipt?.contractAddress;
 
-            // Optional: save locally
+            if (!deployedAddress) {
+                throw new Error("Deployment not confirmed");
+            }
+
+            setContractAddr(deployedAddress);
             localStorage.setItem("escrow_contract", deployedAddress);
 
             setTxStatus("success");

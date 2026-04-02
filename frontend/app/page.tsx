@@ -11,7 +11,7 @@ import { ethers } from "ethers";
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
-const CONTRACT_ADDRESS = "0xe82df1B61C7731D9856B82e325B0B9eBA3433B95";
+const CONTRACT_ADDRESS = "0x8273c7a2ea75841cFA4a3ff5bF8CC05dc3983649";
 
 type Tab = "create" | "manage" | "about";
 type TxStatus = "idle" | "pending" | "success" | "error";

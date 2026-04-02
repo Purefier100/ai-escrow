@@ -163,17 +163,31 @@ export default function Home() {
         }
     };
 
-    const fetchState = async () => {
+    const fetchState = async (waitForComplete = false) => {
         if (!contractAddr) { alert("No contract address set"); return; }
         setTxStatus("pending");
         setTxMsg("Fetching contract state...");
         try {
             const client = getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
-            const result = await client.readContract({
-                address: contractAddr as `0x${string}`,
-                functionName: "get_status",
-                args: [],
-            });
+
+            let result: any;
+            let attempts = 0;
+            const maxAttempts = waitForComplete ? 20 : 1;
+
+            while (attempts < maxAttempts) {
+                result = await client.readContract({
+                    address: contractAddr as `0x${string}`,
+                    functionName: "get_status",
+                    args: [],
+                });
+
+                if (!waitForComplete || (result as any).completed) break;
+
+                attempts++;
+                setTxMsg(`Waiting for state to update... (${attempts}/${maxAttempts})`);
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
             setEscrowState(result as unknown as EscrowState);
             setTxStatus("idle");
             setTxMsg("");
@@ -201,6 +215,8 @@ export default function Home() {
             setTxStatus("success");
             setTxMsg("Work marked as complete!");
             setWorkUrl("");
+            // Auto-refresh state after marking complete
+            setTimeout(() => fetchState(true), 2000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");

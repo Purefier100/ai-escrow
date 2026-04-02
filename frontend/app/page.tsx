@@ -131,7 +131,10 @@ export default function Home() {
             });
             setTxHash(hash as string);
             setTxStatus("success");
-            setTxMsg(`Contract deployed! TX Hash: ${hash}. Go to Manage tab and check your contract on GenLayer Studio.`);
+            setTxMsg(`Contract deployed! TX: ${hash} — Switch to Manage tab and click LOAD to see your contract.`);
+            // Auto switch to manage tab
+            setTab("manage");
+            setContractAddr(""); // clear so user knows to find the address
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Deployment failed");

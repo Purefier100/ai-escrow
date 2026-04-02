@@ -15,6 +15,7 @@ const CONTRACT_ADDRESS = "0x8273c7a2ea75841cFA4a3ff5bF8CC05dc3983649";
 
 type Tab = "create" | "manage" | "about";
 type TxStatus = "idle" | "pending" | "success" | "error";
+type UserRole = "client" | "freelancer" | "observer" | null;
 
 interface EscrowState {
     client: string;
@@ -29,11 +30,40 @@ interface EscrowState {
 const short = (addr: string) =>
     addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
 
+const normalizeAddr = (addr: string) => addr?.toLowerCase() ?? "";
+
 const getGenLayerClient = (walletAddress: string) => {
     return createClient({
         chain: studionet,
         account: walletAddress as `0x${string}`,
     });
+};
+
+// LocalStorage helpers for recent contracts
+const CONTRACTS_KEY = "escrow_contracts_v2";
+
+interface SavedContract {
+    address: string;
+    role: "client" | "freelancer";
+    wallet: string;
+    description?: string;
+    savedAt: number;
+}
+
+const getSavedContracts = (): SavedContract[] => {
+    try {
+        return JSON.parse(localStorage.getItem(CONTRACTS_KEY) || "[]");
+    } catch {
+        return [];
+    }
+};
+
+const saveContract = (entry: SavedContract) => {
+    const existing = getSavedContracts().filter(
+        (c) => !(normalizeAddr(c.address) === normalizeAddr(entry.address) &&
+            normalizeAddr(c.wallet) === normalizeAddr(entry.wallet))
+    );
+    localStorage.setItem(CONTRACTS_KEY, JSON.stringify([entry, ...existing].slice(0, 20)));
 };
 
 export default function Home() {
@@ -49,11 +79,37 @@ export default function Home() {
     const [txHash, setTxHash] = useState("");
     const [txMsg, setTxMsg] = useState("");
     const [workUrl, setWorkUrl] = useState("");
+    const [userRole, setUserRole] = useState<UserRole>(null);
+    const [myContracts, setMyContracts] = useState<SavedContract[]>([]);
 
+    // Determine role whenever wallet or escrowState changes
     useEffect(() => {
-        const saved = localStorage.getItem("escrow_contract");
-        if (saved) setContractAddr(saved);
-    }, []);
+        if (!wallet || !escrowState) {
+            setUserRole(null);
+            return;
+        }
+        const w = normalizeAddr(wallet);
+        if (normalizeAddr(escrowState.client) === w) {
+            setUserRole("client");
+        } else if (normalizeAddr(escrowState.freelancer) === w) {
+            setUserRole("freelancer");
+        } else {
+            setUserRole("observer");
+        }
+    }, [wallet, escrowState]);
+
+    // FIX 1: Load saved contracts for current wallet — including contracts
+    // where this wallet was saved as the freelancer address by the client.
+    // Also auto-loads the most recent contract when switching to manage tab.
+    useEffect(() => {
+        if (!wallet) return;
+        const all = getSavedContracts();
+        const mine = all.filter((c) => normalizeAddr(c.wallet) === normalizeAddr(wallet));
+        setMyContracts(mine);
+        if (mine.length > 0 && tab === "manage" && !escrowState) {
+            setContractAddr(mine[0].address);
+        }
+    }, [wallet, tab]);
 
     const switchToGenLayer = async () => {
         try {
@@ -62,8 +118,6 @@ export default function Home() {
                 params: [{ chainId: "0xF22F" }],
             });
         } catch (switchError: any) {
-            // Don't try to add the network if it already exists
-            // MetaMask error 4902 = chain not found, only add then
             if (switchError.code === 4902) {
                 try {
                     await window.ethereum.request({
@@ -75,8 +129,7 @@ export default function Home() {
                             nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
                         }],
                     });
-                } catch (addError: any) {
-                    // If add fails because network already exists, just ignore it
+                } catch {
                     console.log("Network already exists, continuing...");
                 }
             }
@@ -104,6 +157,7 @@ export default function Home() {
         setWallet("");
         setShowWalletMenu(false);
         setEscrowState(null);
+        setUserRole(null);
     };
 
     useEffect(() => {
@@ -153,7 +207,26 @@ export default function Home() {
             const deployedAddress = topic2 ? "0x" + topic2.slice(26) : contractAddr;
 
             setContractAddr(deployedAddress);
-            localStorage.setItem("escrow_contract", deployedAddress);
+
+            // Save entry for the CLIENT (current wallet)
+            saveContract({
+                address: deployedAddress,
+                role: "client",
+                wallet: wallet,
+                description: description,
+                savedAt: Date.now(),
+            });
+
+            // FIX 1: Also save an entry keyed to the FREELANCER's wallet address
+            // so when they connect their wallet the contract shows up automatically.
+            saveContract({
+                address: deployedAddress,
+                role: "freelancer",
+                wallet: freelancer,
+                description: description,
+                savedAt: Date.now(),
+            });
+
             setTxStatus("success");
             setTxMsg(`Contract deployed at ${deployedAddress}!`);
             setTab("manage");
@@ -199,6 +272,8 @@ export default function Home() {
 
     const markComplete = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
+        // FIX 3: Hard-block at function level — only freelancer can call this
+        if (userRole !== "freelancer") { alert("Only the freelancer can mark work as complete."); return; }
         if (!workUrl) { alert("Please enter your work URL first."); return; }
         setTxStatus("pending");
         setTxMsg("Sending mark_complete transaction...");
@@ -215,15 +290,17 @@ export default function Home() {
             setTxStatus("success");
             setTxMsg("Work marked as complete!");
             setWorkUrl("");
-            // Auto-refresh state after marking complete
             setTimeout(() => fetchState(true), 2000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
         }
     };
+
     const releasePayment = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
+        // FIX 3: Hard-block at function level — only client can call this
+        if (userRole !== "client") { alert("Only the client can release payment."); return; }
         setTxStatus("pending");
         setTxMsg("Sending release_payment transaction...");
         try {
@@ -238,10 +315,31 @@ export default function Home() {
             setTxHash(hash as string);
             setTxStatus("success");
             setTxMsg("Payment released successfully!");
+            setTimeout(() => fetchState(), 2000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
         }
+    };
+
+    // Role badge
+    const RoleBadge = () => {
+        if (!userRole || !escrowState) return null;
+        const labels: Record<string, string> = {
+            client: "👤 You are the CLIENT",
+            freelancer: "🔧 You are the FREELANCER",
+            observer: "👁 Observer",
+        };
+        const colors: Record<string, string> = {
+            client: "bg-[#0044ff15] border-[#0044ff40] text-[#4488ff]",
+            freelancer: "bg-[#00ff8815] border-[#00ff8830] text-[#00ff88]",
+            observer: "bg-[#ffffff10] border-[#ffffff20] text-[#808090]",
+        };
+        return (
+            <span className={`text-xs font-mono px-3 py-1 rounded-full border ${colors[userRole]}`}>
+                {labels[userRole]}
+            </span>
+        );
     };
 
     return (
@@ -393,21 +491,50 @@ export default function Home() {
 
                     {tab === "manage" && (
                         <div className="space-y-6">
+                            {/* My Contracts quick-select */}
+                            {wallet && myContracts.length > 0 && (
+                                <div className="card rounded-xl p-4 space-y-2">
+                                    <p className="font-mono text-xs text-[#505060] tracking-wider mb-2">MY CONTRACTS</p>
+                                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                                        {myContracts.map((c) => (
+                                            <button
+                                                key={c.address}
+                                                onClick={() => { setContractAddr(c.address); setEscrowState(null); }}
+                                                className={`w-full text-left flex items-center justify-between px-3 py-2 rounded-lg border transition-all text-xs font-mono
+                                                    ${normalizeAddr(contractAddr) === normalizeAddr(c.address)
+                                                        ? "border-[#00ff8840] bg-[#00ff8810] text-[#00ff88]"
+                                                        : "border-[#1a1a2e] bg-[#0f0f1a] text-[#606070] hover:border-[#2a2a4e] hover:text-white"}`}
+                                            >
+                                                <span>{short(c.address)}</span>
+                                                <span className={`px-2 py-0.5 rounded-full text-[10px] border ${c.role === "client" ? "border-[#0044ff40] text-[#4488ff] bg-[#0044ff10]" : "border-[#00ff8830] text-[#00ff88] bg-[#00ff8810]"}`}>
+                                                    {c.role.toUpperCase()}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="flex gap-3">
                                 <input className="input-field flex-1 rounded-lg px-4 py-3 text-sm font-mono"
                                     placeholder="Contract address 0x..." value={contractAddr} onChange={(e) => setContractAddr(e.target.value)} />
-                                <button onClick={fetchState} className="btn-secondary px-5 rounded-lg font-mono text-sm">LOAD</button>
+                                <button onClick={() => fetchState()} className="btn-secondary px-5 rounded-lg font-mono text-sm">LOAD</button>
                             </div>
+
                             {escrowState && (
                                 <div className="card rounded-xl p-6 space-y-5 glow-border">
-                                    <div className="flex items-center justify-between">
-                                        <span className="font-mono text-xs text-[#505060] tracking-wider">CONTRACT STATE</span>
+                                    <div className="flex items-center justify-between flex-wrap gap-2">
+                                        <div className="flex items-center gap-3 flex-wrap">
+                                            <span className="font-mono text-xs text-[#505060] tracking-wider">CONTRACT STATE</span>
+                                            <RoleBadge />
+                                        </div>
                                         <span className={`text-xs font-mono px-2 py-1 rounded-full ${escrowState.paid ? "badge-paid" : escrowState.completed ? "badge-complete" : "badge-active"}`}>
                                             {escrowState.paid ? "PAID" : escrowState.completed ? "COMPLETED" : "ACTIVE"}
                                         </span>
                                     </div>
+
                                     <div className="grid grid-cols-2 gap-4 text-sm">
-                                        <div><p className="text-[#505060] text-xs font-mono mb-1">CLIENT</p><p className="font-mono text-[#00ff88]">{short(escrowState.client)}</p></div>
+                                        <div><p className="text-[#505060] text-xs font-mono mb-1">CLIENT</p><p className="font-mono text-[#4488ff]">{short(escrowState.client)}</p></div>
                                         <div><p className="text-[#505060] text-xs font-mono mb-1">FREELANCER</p><p className="font-mono text-[#00ff88]">{short(escrowState.freelancer)}</p></div>
                                         <div><p className="text-[#505060] text-xs font-mono mb-1">AMOUNT</p><p className="font-mono text-white">{escrowState.amount} GEN</p></div>
                                         <div><p className="text-[#505060] text-xs font-mono mb-1">WORK STATUS</p>
@@ -416,8 +543,20 @@ export default function Home() {
                                             </p>
                                         </div>
                                     </div>
-                                    {!escrowState.completed && (
+
+                                    {/* Job description always visible */}
+                                    {escrowState.description && (
                                         <div>
+                                            <p className="text-[#505060] text-xs font-mono mb-1">JOB DESCRIPTION</p>
+                                            <p className="text-sm text-[#a0a0b0] leading-relaxed">{escrowState.description}</p>
+                                        </div>
+                                    )}
+
+                                    {/* ── FREELANCER ONLY: submit work URL ── */}
+                                    {/* FIX 2 & 3: Only renders for freelancer. Client never sees this input. */}
+                                    {userRole === "freelancer" && !escrowState.completed && (
+                                        <div className="border border-[#00ff8820] rounded-xl p-4 bg-[#00ff8805]">
+                                            <p className="font-mono text-xs text-[#00ff88] tracking-wider mb-3">🔧 SUBMIT YOUR WORK</p>
                                             <label className="block font-mono text-xs text-[#505060] tracking-wider mb-2">WORK SUBMISSION URL</label>
                                             <input
                                                 className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono mb-3"
@@ -425,18 +564,89 @@ export default function Home() {
                                                 value={workUrl}
                                                 onChange={(e) => setWorkUrl(e.target.value)}
                                             />
+                                            {/* FIX 3: Button ONLY shown to freelancer, disabled until URL entered */}
+                                            <button
+                                                onClick={markComplete}
+                                                disabled={!workUrl || txStatus === "pending"}
+                                                className="btn-secondary w-full py-2.5 rounded-lg font-mono text-sm"
+                                            >
+                                                {txStatus === "pending" ? "⟳ SUBMITTING..." : "✓ Mark Work as Complete"}
+                                            </button>
                                         </div>
                                     )}
-                                    <div className="flex gap-3 pt-2">
-                                        <button onClick={markComplete} disabled={escrowState.completed || !wallet || !workUrl} className="btn-secondary flex-1 py-2.5 rounded-lg font-mono text-sm">✓ Mark Complete</button>
-                                        <button onClick={releasePayment} disabled={!escrowState.completed || escrowState.paid || !wallet} className="btn-primary flex-1 py-2.5 rounded-lg font-mono text-sm">⊕ Release Payment</button>
-                                    </div>
+
+                                    {/* FREELANCER ONLY: already submitted */}
+                                    {userRole === "freelancer" && escrowState.completed && (
+                                        <div className="border border-[#00ff8840] rounded-xl p-4 bg-[#00ff8808]">
+                                            <p className="font-mono text-xs text-[#00ff88] tracking-wider mb-1">✓ WORK SUBMITTED</p>
+                                            <p className="text-xs text-[#505060]">Your work has been marked complete. Waiting for client to release payment.</p>
+                                        </div>
+                                    )}
+
+                                    {/* ── CLIENT ONLY: review submitted work URL + release payment ── */}
+                                    {/* FIX 2: work_url is shown ONLY to client after freelancer submits */}
+                                    {/* FIX 3: Release Payment button ONLY rendered for client */}
+                                    {userRole === "client" && escrowState.completed && !escrowState.paid && (
+                                        <div className="border border-[#0044ff40] rounded-xl p-4 bg-[#0044ff08]">
+                                            <p className="font-mono text-xs text-[#4488ff] tracking-wider mb-3">👤 FREELANCER SUBMITTED WORK</p>
+                                            {escrowState.work_url && (
+                                                <div className="mb-4">
+                                                    <p className="text-[#505060] text-xs font-mono mb-1">SUBMITTED URL</p>
+                                                    <a
+                                                        href={escrowState.work_url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-sm text-[#4488ff] underline break-all hover:text-[#88aaff]"
+                                                    >
+                                                        {escrowState.work_url}
+                                                    </a>
+                                                </div>
+                                            )}
+                                            {/* FIX 3: Only client sees and can click this button */}
+                                            <button
+                                                onClick={releasePayment}
+                                                disabled={txStatus === "pending"}
+                                                className="btn-primary w-full py-2.5 rounded-lg font-mono text-sm"
+                                            >
+                                                {txStatus === "pending" ? "⟳ RELEASING..." : "⊕ Release Payment to Freelancer"}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* CLIENT ONLY: waiting for freelancer to submit */}
+                                    {userRole === "client" && !escrowState.completed && (
+                                        <div className="border border-[#ffa50030] rounded-xl p-4 bg-[#ffa50008]">
+                                            <p className="font-mono text-xs text-[#ffa500] tracking-wider mb-1">⧖ WAITING FOR FREELANCER</p>
+                                            <p className="text-xs text-[#505060]">The freelancer hasn't submitted their work yet. Check back later.</p>
+                                        </div>
+                                    )}
+
+                                    {/* CLIENT ONLY: already paid */}
+                                    {userRole === "client" && escrowState.paid && (
+                                        <div className="border border-[#00ff8840] rounded-xl p-4 bg-[#00ff8808]">
+                                            <p className="font-mono text-xs text-[#00ff88] tracking-wider mb-1">✓ PAYMENT RELEASED</p>
+                                            <p className="text-xs text-[#505060]">Payment has been sent to the freelancer.</p>
+                                        </div>
+                                    )}
+
+                                    {/* OBSERVER: read-only notice */}
+                                    {userRole === "observer" && (
+                                        <div className="border border-[#ffffff15] rounded-xl p-4 bg-[#ffffff05]">
+                                            <p className="font-mono text-xs text-[#808090] tracking-wider mb-1">👁 READ ONLY</p>
+                                            <p className="text-xs text-[#505060]">You are not a party to this contract. Connect the client or freelancer wallet to take action.</p>
+                                        </div>
+                                    )}
                                 </div>
                             )}
+
                             {!escrowState && (
                                 <div className="card rounded-xl p-12 text-center">
                                     <div className="text-4xl mb-3">⬡</div>
-                                    <p className="font-mono text-[#505060] text-sm">Enter a contract address and click LOAD</p>
+                                    <p className="font-mono text-[#505060] text-sm">
+                                        {myContracts.length > 0
+                                            ? "Select a contract above or enter an address and click LOAD"
+                                            : "Enter a contract address and click LOAD"}
+                                    </p>
                                 </div>
                             )}
                         </div>

@@ -42,6 +42,12 @@ export default function Home() {
     const [amount, setAmount] = useState("");
     const [description, setDescription] = useState("");
     const [contractAddr, setContractAddr] = useState(CONTRACT_ADDRESS);
+    useEffect(() => {
+        const saved = localStorage.getItem("escrow_contract");
+        if (saved) {
+            setContractAddr(saved);
+        }
+    }, []);
     const [escrowState, setEscrowState] = useState<EscrowState | null>(null);
     const [txStatus, setTxStatus] = useState<TxStatus>("idle");
     const [txHash, setTxHash] = useState("");
@@ -111,21 +117,53 @@ export default function Home() {
     }, [connectWallet]);
 
     const deployEscrow = async () => {
-        if (!wallet) { alert("Please connect your wallet first."); return; }
-        if (!freelancer || !amount) { alert("Please fill in all fields."); return; }
+        if (!wallet) {
+            alert("Please connect your wallet first.");
+            return;
+        }
+
+        if (!freelancer || !amount) {
+            alert("Please fill in all fields.");
+            return;
+        }
+
         setTxStatus("pending");
         setTxMsg("Deploying contract to GenLayer...");
+
         try {
             await switchToGenLayer();
+
             const client = getGenLayerClient(wallet);
+
+            // 🔥 Step 1: deploy
             const hash = await client.deployContract({
                 code: getContractCode(),
-                args: [freelancer, parseInt(amount)],
-                leaderOnly: false,
+                args: [freelancer, BigInt(amount)],
+                leaderOnly: true, // faster + no hanging
             });
+
             setTxHash(hash as string);
+            setTxMsg("Waiting for confirmation...");
+
+            // 🔥 Step 2: wait for receipt
+            const receipt = await client.waitForTransaction(hash as string);
+
+            // 🔥 Step 3: get contract address
+            const deployedAddress = receipt.contractAddress;
+
+            if (!deployedAddress) {
+                throw new Error("No contract address returned");
+            }
+
+            // 🔥 Step 4: update frontend
+            setContractAddr(deployedAddress);
+
+            // Optional: save locally
+            localStorage.setItem("escrow_contract", deployedAddress);
+
             setTxStatus("success");
-            setTxMsg(`Contract deployed! TX: ${hash}`);
+            setTxMsg(`Contract deployed at ${deployedAddress}`);
+
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Deployment failed");
@@ -133,7 +171,10 @@ export default function Home() {
     };
 
     const fetchState = async () => {
-        if (!contractAddr) return;
+        if (!contractAddr) {
+            alert("No contract address set");
+            return;
+        }
         setTxStatus("pending");
         setTxMsg("Fetching contract state...");
         try {

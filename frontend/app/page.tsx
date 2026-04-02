@@ -59,16 +59,23 @@ export default function Home() {
                 params: [{ chainId: "0xF22F" }],
             });
         } catch (switchError: any) {
+            // Don't try to add the network if it already exists
+            // MetaMask error 4902 = chain not found, only add then
             if (switchError.code === 4902) {
-                await window.ethereum.request({
-                    method: "wallet_addEthereumChain",
-                    params: [{
-                        chainId: "0xF22F",
-                        chainName: "Genlayer Studio Network",
-                        rpcUrls: ["https://studio.genlayer.com/api"],
-                        nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-                    }],
-                });
+                try {
+                    await window.ethereum.request({
+                        method: "wallet_addEthereumChain",
+                        params: [{
+                            chainId: "0xF22F",
+                            chainName: "Genlayer Studio Network",
+                            rpcUrls: ["https://studio.genlayer.com/api"],
+                            nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+                        }],
+                    });
+                } catch (addError: any) {
+                    // If add fails because network already exists, just ignore it
+                    console.log("Network already exists, continuing...");
+                }
             }
         }
     };

@@ -58,19 +58,25 @@ export default function Home() {
             try {
                 await window.ethereum.request({
                     method: "wallet_switchEthereumChain",
-                    params: [{ chainId: "0xF22F" }], // 61999 in hex
+                    params: [{ chainId: "0xF22F" }],
                 });
-            } catch {
-                // Add network if not exists
-                await window.ethereum.request({
-                    method: "wallet_addEthereumChain",
-                    params: [{
-                        chainId: "0xF22F",
-                        chainName: "Genlayer Studio Network",
-                        rpcUrls: ["https://studio.genlayer.com/api"],
-                        nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-                    }],
-                });
+            } catch (switchError: any) {
+                // Only add network if it doesn't exist (error code 4902)
+                if (switchError.code === 4902) {
+                    try {
+                        await window.ethereum.request({
+                            method: "wallet_addEthereumChain",
+                            params: [{
+                                chainId: "0xF22F",
+                                chainName: "Genlayer Studio Network",
+                                rpcUrls: ["https://studio.genlayer.com/api"],
+                                nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+                            }],
+                        });
+                    } catch (addError) {
+                        console.error("Failed to add network:", addError);
+                    }
+                }
             }
             const signer = await p.getSigner();
             const addr = await signer.getAddress();

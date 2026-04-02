@@ -46,6 +46,7 @@ export default function Home() {
     const [txStatus, setTxStatus] = useState<TxStatus>("idle");
     const [txHash, setTxHash] = useState("");
     const [txMsg, setTxMsg] = useState("");
+    const [workUrl, setWorkUrl] = useState("");
 
     useEffect(() => {
         const saved = localStorage.getItem("escrow_contract");
@@ -182,8 +183,7 @@ export default function Home() {
 
     const markComplete = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
-        const workUrl = prompt("Enter the URL where your completed work can be viewed:");
-        if (!workUrl) return;
+        if (!workUrl) { alert("Please enter your work URL first."); return; }
         setTxStatus("pending");
         setTxMsg("Sending mark_complete transaction...");
         try {
@@ -198,12 +198,12 @@ export default function Home() {
             setTxHash(hash as string);
             setTxStatus("success");
             setTxMsg("Work marked as complete!");
+            setWorkUrl("");
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
         }
     };
-
     const releasePayment = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
         setTxStatus("pending");
@@ -398,8 +398,19 @@ export default function Home() {
                                             </p>
                                         </div>
                                     </div>
+                                    {!escrowState.completed && (
+                                        <div>
+                                            <label className="block font-mono text-xs text-[#505060] tracking-wider mb-2">WORK SUBMISSION URL</label>
+                                            <input
+                                                className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono mb-3"
+                                                placeholder="https://github.com/you/project or any public URL..."
+                                                value={workUrl}
+                                                onChange={(e) => setWorkUrl(e.target.value)}
+                                            />
+                                        </div>
+                                    )}
                                     <div className="flex gap-3 pt-2">
-                                        <button onClick={markComplete} disabled={escrowState.completed || !wallet} className="btn-secondary flex-1 py-2.5 rounded-lg font-mono text-sm">✓ Mark Complete</button>
+                                        <button onClick={markComplete} disabled={escrowState.completed || !wallet || !workUrl} className="btn-secondary flex-1 py-2.5 rounded-lg font-mono text-sm">✓ Mark Complete</button>
                                         <button onClick={releasePayment} disabled={!escrowState.completed || escrowState.paid || !wallet} className="btn-primary flex-1 py-2.5 rounded-lg font-mono text-sm">⊕ Release Payment</button>
                                     </div>
                                 </div>

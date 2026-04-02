@@ -11,7 +11,7 @@ import { ethers } from "ethers";
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
-const CONTRACT_ADDRESS = "0x8273c7a2ea75841cFA4a3ff5bF8CC05dc3983649";
+const CONTRACT_ADDRESS = "0x99824672D84f9e25eC84e803a93140651221cBfc";
 const JOB_BOARD_ADDRESS = "0x88f7FF47EdB00c583c957454d57A42c31d9DfDE4" as `0x${string}`;
 
 type Tab = "listings" | "create" | "manage" | "history" | "about";
@@ -372,7 +372,7 @@ export default function Home() {
             setTxMsg("✓ Work submitted successfully!");
             setWorkUrl("");
             updateContractStatus(contractAddr, "completed");
-            setTimeout(() => fetchState(true), 2000);
+            await fetchState(true);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -753,9 +753,19 @@ export default function Home() {
                                         <div className="border border-[#0044ff40] rounded-xl p-4 bg-[#0044ff08] space-y-4">
                                             <p className="font-mono text-xs text-[#4488ff] tracking-wider">👤 FREELANCER SUBMITTED WORK</p>
                                             {escrowState.work_url && (
-                                                <div>
-                                                    <p className="text-[#505060] text-xs font-mono mb-1">SUBMITTED URL</p>
-                                                    <a href={escrowState.work_url} target="_blank" rel="noopener noreferrer" className="text-sm text-[#4488ff] underline break-all hover:text-[#88aaff]">{escrowState.work_url}</a>
+                                                <div className="mt-4 p-3 border border-green-500 rounded-lg">
+                                                    <p className="text-green-400 font-mono text-xs mb-1">
+                                                        ✓ WORK SUBMITTED
+                                                    </p>
+
+                                                    <a
+                                                        href={escrowState.work_url}
+                                                        target="_blank"
+                                                        className="text-blue-400 underline break-all"
+                                                    >
+                                                        {escrowState.work_url}
+                                                    </a>
+
                                                 </div>
                                             )}
                                             <p className="text-xs text-[#505060]">GenLayer AI will verify the submitted work matches your job description before releasing funds.</p>

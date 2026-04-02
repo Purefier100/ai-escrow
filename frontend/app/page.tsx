@@ -157,7 +157,12 @@ export default function Home() {
                 args: [],
             });
 
-            // 🔥 convert skills string → array
+            // ✅ FIX: type guard
+            if (!Array.isArray(jobs)) {
+                console.log("Invalid jobs:", jobs);
+                return;
+            }
+
             const formatted = jobs.map((job: any) => ({
                 ...job,
                 skills: job.skills.split(","),

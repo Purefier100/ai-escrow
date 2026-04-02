@@ -12,6 +12,7 @@ import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 
 const CONTRACT_ADDRESS = "0x8273c7a2ea75841cFA4a3ff5bF8CC05dc3983649";
+const JOB_BOARD_ADDRESS = "0x389A6BA7a01412e4120c07A02bafab2378434bC5";
 
 type Tab = "listings" | "create" | "manage" | "history" | "about";
 type TxStatus = "idle" | "pending" | "success" | "error";
@@ -119,8 +120,8 @@ export default function Home() {
     }, [wallet, escrowState]);
 
     useEffect(() => {
-        setJobListings(getJobListings());
-    }, []);
+        fetchJobs();
+    }, [wallet]);
 
     useEffect(() => {
         if (!wallet) return;
@@ -141,6 +142,31 @@ export default function Home() {
                     });
                 } catch { console.log("Network already exists"); }
             }
+        }
+    };
+
+    const fetchJobs = async () => {
+        try {
+            const client = getGenLayerClient(
+                wallet || "0x0000000000000000000000000000000000000000"
+            );
+
+            const jobs = await client.readContract({
+                address: JOB_BOARD_ADDRESS as `0x${string}`,
+                functionName: "get_jobs",
+                args: [],
+            });
+
+            // 🔥 convert skills string → array
+            const formatted = jobs.map((job: any) => ({
+                ...job,
+                skills: job.skills.split(","),
+                postedAt: Date.now(),
+            }));
+
+            setJobListings(formatted);
+        } catch (err) {
+            console.error(err);
         }
     };
 
@@ -221,28 +247,48 @@ export default function Home() {
         }
     };
 
-    const postJobListing = () => {
-        if (!wallet) { alert("Connect wallet first."); return; }
-        if (!jobTitle || !description || !amount) { alert("Fill in title, description, and budget."); return; }
-        const listing: JobListing = {
-            id: `job_${Date.now()}`,
-            title: jobTitle,
-            description,
-            budget: amount,
-            skills: jobSkills.split(",").map(s => s.trim()).filter(Boolean),
-            client: wallet,
-            postedAt: Date.now(),
-            status: "open",
-        };
-        saveJobListing(listing);
-        setJobListings(getJobListings());
-        setJobTitle(""); setDescription(""); setAmount(""); setJobSkills("");
-        setPostingJob(false);
-        setTab("listings");
-        setTxStatus("success");
-        setTxMsg("Job posted successfully!");
-    };
+    const postJobListing = async () => {
+        if (!wallet) {
+            alert("Connect wallet first");
+            return;
+        }
 
+        if (!jobTitle || !description || !amount) {
+            alert("Fill all fields");
+            return;
+        }
+
+        try {
+            const client = getGenLayerClient(wallet);
+
+            const tx = await client.writeContract({
+                address: JOB_BOARD_ADDRESS as `0x${string}`,
+                functionName: "post_job",
+                args: [
+                    jobTitle,
+                    description,
+                    BigInt(amount),
+                    jobSkills, // string
+                ],
+                value: BigInt(0),
+            });
+
+            console.log("TX:", tx);
+
+            // refresh jobs
+            await fetchJobs();
+
+            // reset form
+            setJobTitle("");
+            setDescription("");
+            setAmount("");
+            setJobSkills("");
+            setPostingJob(false);
+
+        } catch (err) {
+            console.error(err);
+        }
+    };
     const fetchState = async (waitForComplete = false, addr?: string) => {
         const target = addr || contractAddr;
         if (!target) { alert("No contract address set"); return; }

@@ -148,23 +148,32 @@ export default function Home() {
             // 🔥 Poll for receipt
             let receipt = null;
 
-            for (let i = 0; i < 10; i++) {
+            for (let i = 0; i < 30; i++) { // 🔥 increased attempts
                 try {
                     receipt = await client.getTransactionReceipt({
                         hash: hash as `0x${string}`,
                     });
 
-                    if (receipt) break;
-                } catch (e) { }
+                    // ✅ Check if contract is actually deployed
+                    if (receipt && receipt.contractAddress) {
+                        break;
+                    }
 
-                await new Promise((res) => setTimeout(res, 2000));
+                } catch (e) {
+
+                }
+
+
+                setTxMsg(`Waiting for confirmation... (${i + 1}/30)`);
+
+                await new Promise((res) => setTimeout(res, 3000));
             }
 
-            const deployedAddress = receipt?.contractAddress;
-
-            if (!deployedAddress) {
-                throw new Error("Deployment not confirmed");
+            if (!receipt || !receipt.contractAddress) {
+                throw new Error("Deployment taking longer than expected. Try again or wait.");
             }
+
+            const deployedAddress = receipt.contractAddress;
 
             setContractAddr(deployedAddress);
             localStorage.setItem("escrow_contract", deployedAddress);

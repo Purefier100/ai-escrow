@@ -27,13 +27,11 @@ interface EscrowState {
 const short = (addr: string) =>
     addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
 
-const getGenLayerClient = async (walletAddress: string) => {
-    const client = createClient({
+const getGenLayerClient = (walletAddress: string) => {
+    return createClient({
         chain: studionet,
         account: walletAddress as `0x${string}`,
     });
-    await client.connect("Genlayer Studio Network");
-    return client;
 };
 
 export default function Home() {
@@ -56,6 +54,24 @@ export default function Home() {
         try {
             const p = new ethers.BrowserProvider(window.ethereum);
             await p.send("eth_requestAccounts", []);
+            // Switch to GenLayer Studio Network
+            try {
+                await window.ethereum.request({
+                    method: "wallet_switchEthereumChain",
+                    params: [{ chainId: "0xF22F" }], // 61999 in hex
+                });
+            } catch {
+                // Add network if not exists
+                await window.ethereum.request({
+                    method: "wallet_addEthereumChain",
+                    params: [{
+                        chainId: "0xF22F",
+                        chainName: "Genlayer Studio Network",
+                        rpcUrls: ["https://studio.genlayer.com/api"],
+                        nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+                    }],
+                });
+            }
             const signer = await p.getSigner();
             const addr = await signer.getAddress();
             setWallet(addr);

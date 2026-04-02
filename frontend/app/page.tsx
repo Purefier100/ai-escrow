@@ -22,6 +22,8 @@ interface EscrowState {
     amount: string;
     completed: boolean;
     paid: boolean;
+    description: string;
+    work_url: string;
 }
 
 const short = (addr: string) =>

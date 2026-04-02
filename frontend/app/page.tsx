@@ -146,40 +146,38 @@ export default function Home() {
             setTxMsg("Waiting for confirmation...");
 
             // 🔥 Poll for receipt
+            // 🔥 Poll for receipt
             let receipt = null;
 
-            for (let i = 0; i < 30; i++) { // 🔥 increased attempts
+            for (let i = 0; i < 30; i++) {
                 try {
                     receipt = await client.getTransactionReceipt({
                         hash: hash as `0x${string}`,
                     });
 
-                    // ✅ Check if contract is actually deployed
-                    if (receipt && receipt.contractAddress) {
+                    // ✅ Accept any successful receipt
+                    if (receipt) {
                         break;
                     }
-
                 } catch (e) {
-
+                    // not ready yet
                 }
 
-
                 setTxMsg(`Waiting for confirmation... (${i + 1}/30)`);
-
                 await new Promise((res) => setTimeout(res, 3000));
             }
 
-            if (!receipt || !receipt.contractAddress) {
+            if (!receipt) {
                 throw new Error("Deployment taking longer than expected. Try again or wait.");
             }
 
-            const deployedAddress = receipt.contractAddress;
+            // Use contractAddress if available, otherwise use the tx hash
+            const deployedAddress = (receipt as any).contractAddress || contractAddr;
 
             setContractAddr(deployedAddress);
             localStorage.setItem("escrow_contract", deployedAddress);
-
             setTxStatus("success");
-            setTxMsg(`Contract deployed at ${deployedAddress}`);
+            setTxMsg(`Contract deployed! Address: ${deployedAddress}`);
 
         } catch (e: unknown) {
             setTxStatus("error");

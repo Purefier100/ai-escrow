@@ -18,14 +18,18 @@ type Tab = "listings" | "create" | "manage" | "history" | "about";
 type TxStatus = "idle" | "pending" | "success" | "error";
 type UserRole = "client" | "freelancer" | "observer" | null;
 
+interface Submission {
+    freelancer: string;
+    url: string;
+}
+
 interface EscrowState {
     client: string;
-    freelancer: string;
     amount: string;
-    completed: boolean;
-    paid: boolean;
     description: string;
-    work_url: string;
+    paid: boolean;
+    submissions: Submission[];
+    selected: string;
 }
 
 interface SavedContract {
@@ -58,14 +62,12 @@ const CONTRACTS_KEY = "escrow_contracts_v3";
 const getSavedContracts = (): SavedContract[] => {
     try { return JSON.parse(localStorage.getItem(CONTRACTS_KEY) || "[]"); } catch { return []; }
 };
-
 const saveContract = (entry: SavedContract) => {
     const existing = getSavedContracts().filter(
         (c) => !(normalizeAddr(c.address) === normalizeAddr(entry.address) && normalizeAddr(c.wallet) === normalizeAddr(entry.wallet))
     );
     localStorage.setItem(CONTRACTS_KEY, JSON.stringify([entry, ...existing].slice(0, 50)));
 };
-
 const updateContractStatus = (address: string, status: SavedContract["status"]) => {
     const all = getSavedContracts().map(c =>
         normalizeAddr(c.address) === normalizeAddr(address) ? { ...c, status } : c
@@ -93,6 +95,7 @@ export default function Home() {
     const [jobListings, setJobListings] = useState<JobListing[]>([]);
     const [disputeReason, setDisputeReason] = useState("");
     const [showDispute, setShowDispute] = useState(false);
+    const [currentJobId, setCurrentJobId] = useState<number | null>(null);
     const [historyFilter, setHistoryFilter] = useState<"all" | "client" | "freelancer">("all");
     const [postingJob, setPostingJob] = useState(false);
 
@@ -100,46 +103,31 @@ export default function Home() {
         if (!wallet || !escrowState) { setUserRole(null); return; }
         const w = normalizeAddr(wallet);
         if (normalizeAddr(escrowState.client) === w) setUserRole("client");
-        else if (normalizeAddr(escrowState.freelancer) === w) setUserRole("freelancer");
         else setUserRole("observer");
     }, [wallet, escrowState]);
 
-    useEffect(() => {
-        const loadJobs = async () => {
-            try {
-                const client = getGenLayerClient(
-                    wallet || "0x0000000000000000000000000000000000000000"
-                );
-
-                const rawJobs = await client.readContract({
-                    address: JOB_BOARD_ADDRESS,
-                    functionName: "get_jobs",
-                    args: [],
-                });
-
-                const formatted = (rawJobs as any[]).map((job) => ({
-                    id: Number(job.id),
-                    title: job.title,
-                    description: job.description,
-                    budget: Number(job.budget),
-                    client: job.client,
-                    escrow: job.escrow,   // ✅ ADD
-                    skills: job.skills ? job.skills.split(",") : [],
-                }));
-
-                setJobListings(formatted);
-            } catch (err) {
-                console.error("Failed to load jobs", err);
-            }
-        };
-
-        loadJobs();
+    const loadJobs = useCallback(async () => {
+        try {
+            const client = getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
+            const rawJobs = await client.readContract({ address: JOB_BOARD_ADDRESS, functionName: "get_jobs", args: [] });
+            const formatted = (rawJobs as any[]).map((job) => ({
+                id: Number(job.id),
+                title: job.title,
+                description: job.description,
+                budget: Number(job.budget),
+                client: job.client,
+                escrow: job.escrow,
+                skills: job.skills ? job.skills.split(",").map((s: string) => s.trim()).filter(Boolean) : [],
+            }));
+            setJobListings(formatted);
+        } catch (err) { console.error("Failed to load jobs", err); }
     }, [wallet]);
+
+    useEffect(() => { loadJobs(); }, [loadJobs]);
 
     useEffect(() => {
         if (!wallet) return;
-        const all = getSavedContracts();
-        const mine = all.filter((c) => normalizeAddr(c.wallet) === normalizeAddr(wallet));
+        const mine = getSavedContracts().filter((c) => normalizeAddr(c.wallet) === normalizeAddr(wallet));
         setMyContracts(mine);
     }, [wallet, tab]);
 
@@ -169,18 +157,12 @@ export default function Home() {
         } catch (e) { console.error(e); }
     }, []);
 
-    const disconnectWallet = () => {
-        setWallet(""); setShowWalletMenu(false); setEscrowState(null); setUserRole(null);
-    };
+    const disconnectWallet = () => { setWallet(""); setShowWalletMenu(false); setEscrowState(null); setUserRole(null); };
 
     useEffect(() => {
         if (typeof window !== "undefined" && window.ethereum) {
-            window.ethereum.request({ method: "eth_accounts" }).then((accounts: string[]) => {
-                if (accounts.length > 0) connectWallet();
-            });
-            window.ethereum.on("accountsChanged", (accounts: string[]) => {
-                if (accounts.length === 0) disconnectWallet(); else connectWallet();
-            });
+            window.ethereum.request({ method: "eth_accounts" }).then((accounts: string[]) => { if (accounts.length > 0) connectWallet(); });
+            window.ethereum.on("accountsChanged", (accounts: string[]) => { if (accounts.length === 0) disconnectWallet(); else connectWallet(); });
             window.ethereum.on("chainChanged", () => window.location.reload());
         }
     }, [connectWallet]);
@@ -202,58 +184,29 @@ export default function Home() {
     const postJobListing = async () => {
         if (!wallet) { alert("Connect wallet first"); return; }
         if (!jobTitle || !description || !amount) { alert("Fill all fields"); return; }
-
         setTxStatus("pending");
         setTxMsg("Deploying escrow contract...");
-
         try {
             await switchToGenLayer();
             const client = getGenLayerClient(wallet);
-
-
             const hash = await client.deployContract({
                 code: getContractCode(),
-                args: ["0x0000000000000000000000000000000000000000", BigInt(amount), description],
+                args: [BigInt(amount), description],
                 leaderOnly: true,
             });
-
+            setTxMsg("Getting contract address...");
             const contractAddress = await getContractFromReceipt(hash as string) as `0x${string}`;
-
-
+            setTxMsg("Posting job on-chain...");
             await (client.writeContract as any)({
                 address: JOB_BOARD_ADDRESS,
                 functionName: "post_job",
-                args: [
-                    jobTitle,
-                    description,
-                    BigInt(Number(amount)),
-                    jobSkills,
-                    contractAddress
-                ],
+                args: [jobTitle, description, BigInt(Number(amount)), jobSkills, contractAddress],
             });
-
             setTxStatus("success");
             setTxMsg("✓ Job posted on-chain!");
-
-
-            const rawJobs = await client.readContract({
-                address: JOB_BOARD_ADDRESS,
-                functionName: "get_jobs",
-                args: [],
-            });
-
-            const formatted = (rawJobs as any[]).map((job) => ({
-                id: Number(job.id),
-                title: job.title,
-                description: job.description,
-                budget: Number(job.budget),
-                client: job.client,
-                escrow: job.escrow,
-                skills: job.skills ? job.skills.split(",") : [],
-            }));
-
-            setJobListings(formatted);
-
+            setJobTitle(""); setDescription(""); setAmount(""); setJobSkills("");
+            setPostingJob(false);
+            await loadJobs();
         } catch (e: any) {
             setTxStatus("error");
             setTxMsg(e.message || "Failed");
@@ -261,41 +214,12 @@ export default function Home() {
     };
 
     const deleteJob = async (jobId: number) => {
-        if (!wallet) return alert("Connect wallet");
-
+        if (!wallet) return;
         try {
             const client = getGenLayerClient(wallet);
-
-            await (client.writeContract as any)({
-                address: JOB_BOARD_ADDRESS,
-                functionName: "delete_job",
-                args: [jobId],
-            });
-
-            alert("Job deleted ✅");
-
-
-            const jobs = await client.readContract({
-                address: JOB_BOARD_ADDRESS,
-                functionName: "get_jobs",
-                args: [],
-            });
-
-            const formatted = (jobs as any[]).map((job) => ({
-                id: Number(job.id),
-                title: job.title,
-                description: job.description,
-                budget: Number(job.budget),
-                client: job.client,
-                escrow: job.escrow,
-                skills: job.skills ? job.skills.split(",") : [],
-            }));
-
-            setJobListings(formatted);
-        } catch (err) {
-            console.error(err);
-            alert("Failed to delete job");
-        }
+            await (client.writeContract as any)({ address: JOB_BOARD_ADDRESS, functionName: "delete_job", args: [jobId] });
+            await loadJobs();
+        } catch (err) { console.error(err); }
     };
 
     const deployEscrow = async () => {
@@ -308,7 +232,7 @@ export default function Home() {
             const client = getGenLayerClient(wallet);
             const hash = await client.deployContract({
                 code: getContractCode(),
-                args: [freelancer, BigInt(amount), description],
+                args: [BigInt(amount), description],
                 leaderOnly: true,
             });
             setTxHash(hash as string);
@@ -325,7 +249,7 @@ export default function Home() {
         }
     };
 
-    const fetchState = async (waitForComplete = false, addr?: string) => {
+    const fetchState = async (waitForUpdate = false, addr?: string) => {
         const target = addr || contractAddr;
         if (!target) { alert("No contract address set"); return; }
         setTxStatus("pending");
@@ -334,17 +258,16 @@ export default function Home() {
             const client = getGenLayerClient(wallet || "0x0000000000000000000000000000000000000000");
             let result: any;
             let attempts = 0;
-            const maxAttempts = waitForComplete ? 20 : 1;
+            const maxAttempts = waitForUpdate ? 20 : 1;
             while (attempts < maxAttempts) {
                 result = await client.readContract({ address: target as `0x${string}`, functionName: "get_status", args: [] });
-                if (!waitForComplete || (result as any).completed) break;
+                if (!waitForUpdate) break;
                 attempts++;
                 setTxMsg(`Waiting for state update... (${attempts}/${maxAttempts})`);
                 await new Promise(r => setTimeout(r, 3000));
             }
             setEscrowState(result as unknown as EscrowState);
             if ((result as any).paid) updateContractStatus(target, "paid");
-            else if ((result as any).completed) updateContractStatus(target, "completed");
             setTxStatus("idle");
             setTxMsg("");
         } catch (e: unknown) {
@@ -353,9 +276,9 @@ export default function Home() {
         }
     };
 
-    const markComplete = async () => {
+    const submitWork = async () => {
         if (!wallet) { alert("Connect wallet first."); return; }
-        if (!workUrl) { alert("Please enter your work URL first."); return; }
+        if (!workUrl) { alert("Please enter your work URL."); return; }
         setTxStatus("pending");
         setTxMsg("Submitting work...");
         try {
@@ -363,16 +286,36 @@ export default function Home() {
             const client = getGenLayerClient(wallet);
             const hash = await client.writeContract({
                 address: contractAddr as `0x${string}`,
-                functionName: "mark_complete",
+                functionName: "submit_work",
                 args: [workUrl],
                 value: BigInt(0),
             });
             setTxHash(hash as string);
             setTxStatus("success");
-            setTxMsg("✓ Work submitted successfully!");
+            setTxMsg("✓ Work submitted! Waiting for client to review.");
             setWorkUrl("");
-            updateContractStatus(contractAddr, "completed");
-            await fetchState(true);
+            setTimeout(() => fetchState(true), 2000);
+        } catch (e: unknown) {
+            setTxStatus("error");
+            setTxMsg(e instanceof Error ? e.message : "Transaction failed");
+        }
+    };
+
+    const selectWinner = async (freelancerAddr: string) => {
+        if (!wallet) { alert("Connect wallet first."); return; }
+        setTxStatus("pending");
+        setTxMsg("Selecting winner...");
+        try {
+            const client = getGenLayerClient(wallet);
+            await (client.writeContract as any)({
+                address: contractAddr as `0x${string}`,
+                functionName: "select_winner",
+                args: [freelancerAddr],
+                value: BigInt(0),
+            });
+            setTxStatus("success");
+            setTxMsg("✓ Winner selected!");
+            setTimeout(() => fetchState(true), 2000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -383,24 +326,24 @@ export default function Home() {
         if (!wallet) { alert("Connect wallet first."); return; }
         if (userRole !== "client") { alert("Only the client can release payment."); return; }
         setTxStatus("pending");
-        setTxMsg("Releasing payment with AI verification...");
+        setTxMsg("AI verifying work and releasing payment...");
         try {
             await switchToGenLayer();
             const client = getGenLayerClient(wallet);
-            const hash = await client.writeContract({
+            await (client.writeContract as any)({
                 address: contractAddr as `0x${string}`,
                 functionName: "release_payment",
                 args: [],
                 value: BigInt(0),
             });
-            setTxHash(hash as string);
             setTxStatus("success");
-            setTxMsg("✓ Payment released successfully!");
+            setTxMsg("✓ Payment released!");
             updateContractStatus(contractAddr, "paid");
+            if (currentJobId !== null) await deleteJob(currentJobId);
             setTimeout(() => fetchState(false), 2000);
-        } catch (e: unknown) {
+        } catch (e: any) {
             setTxStatus("error");
-            setTxMsg(e instanceof Error ? e.message : "Transaction failed");
+            setTxMsg(e.message || "Transaction failed");
         }
     };
 
@@ -547,7 +490,7 @@ export default function Home() {
                                     <button onClick={postJobListing} disabled={txStatus === "pending"} className="btn-primary w-full py-3 rounded-lg font-mono text-sm">
                                         {txStatus === "pending" ? "⟳ POSTING..." : "⊕ POST JOB & DEPLOY CONTRACT"}
                                     </button>
-                                    <p className="text-xs text-[#404060] text-center">This will deploy an escrow contract on GenLayer. Freelancers can then apply by submitting their work.</p>
+                                    <p className="text-xs text-[#404060] text-center">This deploys an escrow contract. Freelancers apply by submitting their work URL.</p>
                                 </div>
                             )}
 
@@ -569,45 +512,44 @@ export default function Home() {
                                             </div>
                                             <div className="text-right shrink-0">
                                                 <div className="font-mono text-[#00ff88] font-bold text-lg">{job.budget} GEN</div>
-                                                <div className="text-xs text-[#505060]">{"On-chain job"}</div>
+                                                <div className="text-xs text-[#505060]">On-chain</div>
                                             </div>
                                         </div>
-                                        {Array.isArray(job.skills) && job.skills.length > 0 && (
+                                        {job.skills.length > 0 && (
                                             <div className="flex flex-wrap gap-2">
                                                 {job.skills.map((s) => (
-                                                    <span
-                                                        key={s}
-                                                        className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#00ff8810] border border-[#00ff8820] text-[#00ff88]"
-                                                    >
-                                                        {s}
-                                                    </span>
+                                                    <span key={s} className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#00ff8810] border border-[#00ff8820] text-[#00ff88]">{s}</span>
                                                 ))}
                                             </div>
                                         )}
                                         <div className="flex items-center justify-between pt-1">
                                             <span className="text-xs font-mono text-[#404060]">Posted by {short(job.client)}</span>
-                                            {wallet && normalizeAddr(wallet) !== normalizeAddr(job.client) && (
+                                            {wallet && normalizeAddr(wallet) !== normalizeAddr(job.client) ? (
                                                 <button
                                                     className="btn-primary px-4 py-2 rounded-lg font-mono text-xs"
                                                     onClick={() => {
                                                         setContractAddr(job.escrow);
+                                                        setCurrentJobId(job.id);
                                                         setEscrowState(null);
                                                         setTab("manage");
                                                     }}
                                                 >
-                                                    Go to Manage →
+                                                    Apply → Go to Manage
                                                 </button>
-                                            )}
-                                            {wallet && normalizeAddr(wallet) === normalizeAddr(job.client) && (
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-xs font-mono text-[#505060]">Your listing</span>
-
+                                            ) : wallet && (
+                                                <div className="flex items-center gap-3">
                                                     <button
-                                                        onClick={() => deleteJob(job.id)}
-                                                        className="text-xs font-mono text-[#ff4444] border border-[#ff444440] px-2 py-1 rounded hover:bg-[#ff444410]"
+                                                        className="btn-secondary px-3 py-1.5 rounded-lg font-mono text-xs"
+                                                        onClick={() => {
+                                                            setContractAddr(job.escrow);
+                                                            setCurrentJobId(job.id);
+                                                            setEscrowState(null);
+                                                            setTab("manage");
+                                                        }}
                                                     >
-                                                        Delete
+                                                        View Contract
                                                     </button>
+                                                    <button onClick={() => deleteJob(job.id)} className="text-xs font-mono text-[#ff4444] border border-[#ff444440] px-3 py-1.5 rounded-lg hover:bg-[#ff444410]">Delete</button>
                                                 </div>
                                             )}
                                         </div>
@@ -626,8 +568,8 @@ export default function Home() {
                                     <textarea className="input-field w-full rounded-lg px-4 py-3 text-sm resize-none" rows={3} placeholder="Describe the work to be done..." value={description} onChange={(e) => setDescription(e.target.value)} />
                                 </div>
                                 <div>
-                                    <label className="block font-mono text-xs text-[#505060] tracking-wider mb-2">FREELANCER ADDRESS</label>
-                                    <input className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono" placeholder="0x..." value={freelancer} onChange={(e) => setFreelancer(e.target.value)} />
+                                    <label className="block font-mono text-xs text-[#505060] tracking-wider mb-2">FREELANCER ADDRESS (optional)</label>
+                                    <input className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono" placeholder="0x... (leave blank for open contract)" value={freelancer} onChange={(e) => setFreelancer(e.target.value)} />
                                 </div>
                                 <div>
                                     <label className="block font-mono text-xs text-[#505060] tracking-wider mb-2">AMOUNT (GEN)</label>
@@ -644,9 +586,9 @@ export default function Home() {
                             <div className="space-y-4">
                                 <p className="font-mono text-xs text-[#505060] tracking-wider">HOW IT WORKS</p>
                                 {[
-                                    { step: "01", title: "Client posts job", desc: "Post a job on the board — a contract is deployed automatically with funds locked" },
-                                    { step: "02", title: "Freelancer applies", desc: "Freelancer clicks 'Apply', goes to Manage, submits their work URL" },
-                                    { step: "03", title: "AI verifies + pays", desc: "Client reviews the URL and releases payment — AI validators verify the work" },
+                                    { step: "01", title: "Client posts job", desc: "Post a job on the board — a contract is deployed with funds locked" },
+                                    { step: "02", title: "Freelancers apply", desc: "Multiple freelancers can submit their work. Client picks the best." },
+                                    { step: "03", title: "AI verifies + pays", desc: "Client selects a winner and releases payment — AI verifies work quality" },
                                 ].map((item) => (
                                     <div key={item.step} className="flex gap-4 p-4 card rounded-xl">
                                         <span className="font-mono text-[#00ff88] text-lg font-bold shrink-0">{item.step}</span>
@@ -661,15 +603,15 @@ export default function Home() {
                     {tab === "manage" && (
                         <div className="space-y-6">
                             {wallet && myContracts.length > 0 && (
-                                <div className="card rounded-xl p-4 space-y-2">
-                                    <p className="font-mono text-xs text-[#505060] tracking-wider mb-2">MY CONTRACTS</p>
+                                <div className="card rounded-xl p-4">
+                                    <p className="font-mono text-xs text-[#505060] tracking-wider mb-3">MY CONTRACTS</p>
                                     <div className="space-y-2 max-h-48 overflow-y-auto">
                                         {myContracts.slice(0, 10).map((c) => (
                                             <button key={c.address + c.role} onClick={() => { setContractAddr(c.address); setEscrowState(null); }}
                                                 className={`w-full text-left flex items-center justify-between px-3 py-2 rounded-lg border transition-all text-xs font-mono ${normalizeAddr(contractAddr) === normalizeAddr(c.address) ? "border-[#00ff8840] bg-[#00ff8810] text-[#00ff88]" : "border-[#1a1a2e] bg-[#0f0f1a] text-[#606070] hover:border-[#2a2a4e] hover:text-white"}`}>
                                                 <div>
                                                     <span>{short(c.address)}</span>
-                                                    {c.description && <span className="text-[#404050] ml-2">— {c.description.slice(0, 30)}{c.description.length > 30 ? "..." : ""}</span>}
+                                                    {c.description && <span className="text-[#404050] ml-2">— {c.description.slice(0, 25)}{c.description.length > 25 ? "..." : ""}</span>}
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <StatusBadge status={c.status} />
@@ -688,111 +630,145 @@ export default function Home() {
 
                             {escrowState && (
                                 <div className="card rounded-xl p-6 space-y-5 glow-border">
+                                    {/* Header */}
                                     <div className="flex items-center justify-between flex-wrap gap-2">
                                         <div className="flex items-center gap-3 flex-wrap">
                                             <span className="font-mono text-xs text-[#505060] tracking-wider">CONTRACT STATE</span>
                                             <RoleBadge />
                                         </div>
-                                        <span className={`text-xs font-mono px-2 py-1 rounded-full ${escrowState.paid ? "badge-paid" : escrowState.completed ? "badge-complete" : "badge-active"}`}>
-                                            {escrowState.paid ? "PAID" : escrowState.completed ? "COMPLETED" : "ACTIVE"}
+                                        <span className={`text-xs font-mono px-2 py-1 rounded-full ${escrowState.paid ? "badge-paid" : escrowState.submissions?.length > 0 ? "badge-complete" : "badge-active"}`}>
+                                            {escrowState.paid ? "PAID" : escrowState.submissions?.length > 0 ? "WORK SUBMITTED" : "ACTIVE"}
                                         </span>
                                     </div>
 
+                                    {/* Info grid */}
                                     <div className="grid grid-cols-2 gap-4 text-sm">
                                         <div><p className="text-[#505060] text-xs font-mono mb-1">CLIENT</p><p className="font-mono text-[#4488ff]">{short(escrowState.client)}</p></div>
-                                        <div><p className="text-[#505060] text-xs font-mono mb-1">FREELANCER</p><p className="font-mono text-[#00ff88]">{short(escrowState.freelancer)}</p></div>
                                         <div><p className="text-[#505060] text-xs font-mono mb-1">AMOUNT</p><p className="font-mono text-white">{escrowState.amount} GEN</p></div>
-                                        <div><p className="text-[#505060] text-xs font-mono mb-1">WORK STATUS</p>
-                                            <p className={`font-mono ${escrowState.paid ? "text-[#00c8ff]" : escrowState.completed ? "text-[#00ff88]" : "text-[#ffa500]"}`}>
-                                                {escrowState.paid ? "✓ PAID" : escrowState.completed ? "✓ COMPLETE" : "⧖ IN PROGRESS"}
+                                        <div><p className="text-[#505060] text-xs font-mono mb-1">SUBMISSIONS</p><p className="font-mono text-[#00ff88]">{escrowState.submissions?.length || 0} freelancer(s)</p></div>
+                                        <div><p className="text-[#505060] text-xs font-mono mb-1">STATUS</p>
+                                            <p className={`font-mono text-xs ${escrowState.paid ? "text-[#00c8ff]" : escrowState.selected ? "text-[#00ff88]" : "text-[#ffa500]"}`}>
+                                                {escrowState.paid ? "✓ PAID" : escrowState.selected ? "Winner selected" : "Awaiting submissions"}
                                             </p>
                                         </div>
                                     </div>
 
                                     {escrowState.description && (
-                                        <div><p className="text-[#505060] text-xs font-mono mb-1">JOB DESCRIPTION</p><p className="text-sm text-[#a0a0b0] leading-relaxed">{escrowState.description}</p></div>
-                                    )}
-
-                                    {/* FREELANCER SECTION — anyone can apply if not completed */}
-                                    {!escrowState.completed && !escrowState.paid && userRole !== "client" && (
-                                        <div className="border border-[#00ff8820] rounded-xl p-4 bg-[#00ff8805]">
-                                            <p className="font-mono text-xs text-[#00ff88] tracking-wider mb-3">🔧 SUBMIT YOUR WORK</p>
-                                            <p className="text-xs text-[#606070] mb-3">Submit a public URL showing your completed work. The AI will verify it matches the job description.</p>
-                                            <label className="block font-mono text-xs text-[#505060] mb-2">PUBLIC URL TO YOUR WORK</label>
-                                            <input className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono mb-3" placeholder="https://github.com/you/project..." value={workUrl} onChange={(e) => setWorkUrl(e.target.value)} />
-                                            <button onClick={markComplete} disabled={!workUrl || txStatus === "pending" || !wallet} className="btn-secondary w-full py-2.5 rounded-lg font-mono text-sm">
-                                                {!wallet ? "Connect wallet to submit" : txStatus === "pending" ? "⟳ SUBMITTING..." : "✓ Submit Work"}
-                                            </button>
+                                        <div className="border border-[#1a1a2e] rounded-lg p-3">
+                                            <p className="text-[#505060] text-xs font-mono mb-1">JOB DESCRIPTION</p>
+                                            <p className="text-sm text-[#a0a0b0] leading-relaxed">{escrowState.description}</p>
                                         </div>
                                     )}
 
-                                    {escrowState.completed && !escrowState.paid && userRole !== "client" && (
-                                        <div className="border border-[#00ff8840] rounded-xl p-4 bg-[#00ff8808]">
-                                            <p className="font-mono text-xs text-[#00ff88] mb-1">✓ WORK SUBMITTED</p>
-                                            {escrowState.work_url && <a href={escrowState.work_url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#4488ff] underline">{escrowState.work_url}</a>}
-                                            <p className="text-xs text-[#505060] mt-1">Waiting for client to review and release payment.</p>
-                                        </div>
-                                    )}
+                                    {/* ── FREELANCER SUBMISSIONS LIST (visible to CLIENT) ── */}
+                                    {userRole === "client" && (
+                                        <div className="space-y-3">
+                                            <p className="font-mono text-xs text-[#505060] tracking-wider">
+                                                FREELANCER SUBMISSIONS ({escrowState.submissions?.length || 0})
+                                            </p>
 
-                                    {escrowState.paid && userRole !== "client" && (
-                                        <div className="border border-[#00c8ff40] rounded-xl p-4 bg-[#00c8ff08]">
-                                            <p className="font-mono text-xs text-[#00c8ff] mb-1">💰 PAYMENT RECEIVED</p>
-                                            <p className="text-xs text-[#505060]">Payment has been released. Contract complete!</p>
-                                        </div>
-                                    )}
-
-                                    {userRole === "client" && !escrowState.completed && !escrowState.paid && (
-                                        <div className="border border-[#ffa50030] rounded-xl p-4 bg-[#ffa50008]">
-                                            <p className="font-mono text-xs text-[#ffa500] mb-1">⧖ WAITING FOR FREELANCER</p>
-                                            <p className="text-xs text-[#505060]">Share this contract address with freelancers so they can apply and submit work.</p>
-                                            <button onClick={() => { navigator.clipboard.writeText(contractAddr); }} className="mt-2 text-xs font-mono text-[#00ff88] hover:underline">📋 Copy contract address</button>
-                                        </div>
-                                    )}
-
-                                    {userRole === "client" && escrowState.completed && !escrowState.paid && (
-                                        <div className="border border-[#0044ff40] rounded-xl p-4 bg-[#0044ff08] space-y-4">
-                                            <p className="font-mono text-xs text-[#4488ff] tracking-wider">👤 FREELANCER SUBMITTED WORK</p>
-                                            {escrowState.work_url && (
-                                                <div className="mt-4 p-3 border border-green-500 rounded-lg">
-                                                    <p className="text-green-400 font-mono text-xs mb-1">
-                                                        ✓ WORK SUBMITTED
-                                                    </p>
-
-                                                    <a
-                                                        href={escrowState.work_url}
-                                                        target="_blank"
-                                                        className="text-blue-400 underline break-all"
-                                                    >
-                                                        {escrowState.work_url}
-                                                    </a>
-
+                                            {!escrowState.submissions || escrowState.submissions.length === 0 ? (
+                                                <div className="border border-[#ffa50030] rounded-xl p-4 bg-[#ffa50008]">
+                                                    <p className="font-mono text-xs text-[#ffa500] mb-1">⧖ NO SUBMISSIONS YET</p>
+                                                    <p className="text-xs text-[#505060]">Share this contract address with freelancers so they can apply.</p>
+                                                    <button onClick={() => { navigator.clipboard.writeText(contractAddr); }} className="mt-2 text-xs font-mono text-[#00ff88] hover:underline">📋 Copy contract address</button>
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-3">
+                                                    {escrowState.submissions.map((sub, i) => (
+                                                        <div key={i} className={`border rounded-xl p-4 space-y-3 ${escrowState.selected === sub.freelancer ? "border-[#00ff8840] bg-[#00ff8808]" : "border-[#1a1a2e] bg-[#0f0f1a]"}`}>
+                                                            <div className="flex items-center justify-between flex-wrap gap-2">
+                                                                <div>
+                                                                    <p className="text-xs font-mono text-[#505060] mb-0.5">FREELANCER</p>
+                                                                    <p className="font-mono text-sm text-[#00ff88]">{short(sub.freelancer)}</p>
+                                                                </div>
+                                                                {escrowState.selected === sub.freelancer && (
+                                                                    <span className="text-xs font-mono px-2 py-1 rounded-full bg-[#00ff8815] border border-[#00ff8830] text-[#00ff88]">★ SELECTED WINNER</span>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-xs font-mono text-[#505060] mb-1">SUBMITTED WORK URL</p>
+                                                                <a href={sub.url} target="_blank" rel="noopener noreferrer" className="text-sm text-[#4488ff] underline break-all hover:text-[#88aaff]">{sub.url}</a>
+                                                            </div>
+                                                            {!escrowState.paid && !escrowState.selected && (
+                                                                <button
+                                                                    onClick={() => selectWinner(sub.freelancer)}
+                                                                    disabled={txStatus === "pending"}
+                                                                    className="btn-secondary w-full py-2 rounded-lg font-mono text-xs border-[#00ff8830] text-[#00ff88] hover:bg-[#00ff8810]"
+                                                                >
+                                                                    ★ Select as Winner
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             )}
-                                            <p className="text-xs text-[#505060]">GenLayer AI will verify the submitted work matches your job description before releasing funds.</p>
-                                            <div className="flex gap-3">
-                                                <button onClick={releasePayment} disabled={txStatus === "pending"} className="btn-primary flex-1 py-2.5 rounded-lg font-mono text-sm">
-                                                    {txStatus === "pending" ? "⟳ VERIFYING..." : "⊕ Release Payment"}
-                                                </button>
-                                                <button onClick={() => setShowDispute(true)} className="btn-secondary px-4 py-2.5 rounded-lg font-mono text-sm text-[#ff4444] border-[#ff444430] hover:border-[#ff4444]">
-                                                    ⚠ Dispute
-                                                </button>
-                                            </div>
+
+                                            {/* Release payment — only shown when winner is selected */}
+                                            {escrowState.selected && !escrowState.paid && (
+                                                <div className="border border-[#0044ff40] rounded-xl p-4 bg-[#0044ff08] space-y-3">
+                                                    <p className="font-mono text-xs text-[#4488ff] tracking-wider">👤 READY TO RELEASE PAYMENT</p>
+                                                    <p className="text-xs text-[#505060]">Winner: <span className="text-[#00ff88] font-mono">{short(escrowState.selected)}</span>. GenLayer AI will verify their work matches the job description before releasing funds.</p>
+                                                    <div className="flex gap-3">
+                                                        <button onClick={releasePayment} disabled={txStatus === "pending"} className="btn-primary flex-1 py-2.5 rounded-lg font-mono text-sm">
+                                                            {txStatus === "pending" ? "⟳ VERIFYING & PAYING..." : "⊕ Release Payment to Winner"}
+                                                        </button>
+                                                        <button onClick={() => setShowDispute(true)} className="btn-secondary px-4 py-2.5 rounded-lg font-mono text-sm text-[#ff4444] border-[#ff444430]">⚠ Dispute</button>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {escrowState.paid && (
+                                                <div className="border border-[#00c8ff40] rounded-xl p-4 bg-[#00c8ff08]">
+                                                    <p className="font-mono text-xs text-[#00c8ff] mb-1">✓ PAYMENT RELEASED</p>
+                                                    <p className="text-xs text-[#505060]">Payment sent to {short(escrowState.selected)}. Contract complete!</p>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
-                                    {userRole === "client" && escrowState.paid && (
-                                        <div className="border border-[#00c8ff40] rounded-xl p-4 bg-[#00c8ff08]">
-                                            <p className="font-mono text-xs text-[#00c8ff] mb-1">✓ PAYMENT RELEASED</p>
-                                            <p className="text-xs text-[#505060]">Payment sent to the freelancer. Contract complete!</p>
+                                    {/* ── FREELANCER SECTION ── */}
+                                    {userRole !== "client" && (
+                                        <div className="space-y-3">
+                                            {!escrowState.paid && (
+                                                <div className="border border-[#00ff8820] rounded-xl p-4 bg-[#00ff8805]">
+                                                    <p className="font-mono text-xs text-[#00ff88] tracking-wider mb-3">🔧 APPLY FOR THIS JOB</p>
+                                                    <p className="text-xs text-[#606070] mb-3">Submit a public URL showing your completed work. The AI will verify it matches the job description.</p>
+                                                    <label className="block font-mono text-xs text-[#505060] mb-2">YOUR WORK URL</label>
+                                                    <input className="input-field w-full rounded-lg px-4 py-3 text-sm font-mono mb-3" placeholder="https://github.com/you/project..." value={workUrl} onChange={(e) => setWorkUrl(e.target.value)} />
+                                                    <button onClick={submitWork} disabled={!workUrl || txStatus === "pending" || !wallet} className="btn-secondary w-full py-2.5 rounded-lg font-mono text-sm">
+                                                        {!wallet ? "Connect wallet to submit" : txStatus === "pending" ? "⟳ SUBMITTING..." : "✓ Submit Work"}
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                            {/* Show their own submission if they already applied */}
+                                            {escrowState.submissions?.find(s => normalizeAddr(s.freelancer) === normalizeAddr(wallet)) && (
+                                                <div className="border border-[#00ff8840] rounded-xl p-4 bg-[#00ff8808]">
+                                                    <p className="font-mono text-xs text-[#00ff88] mb-1">✓ YOUR WORK IS SUBMITTED</p>
+                                                    <a href={escrowState.submissions.find(s => normalizeAddr(s.freelancer) === normalizeAddr(wallet))?.url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#4488ff] underline">View your submission</a>
+                                                    <p className="text-xs text-[#505060] mt-1">
+                                                        {escrowState.selected === wallet ? "🎉 You were selected as the winner! Waiting for payment release." : "Waiting for client to review and select a winner."}
+                                                    </p>
+                                                </div>
+                                            )}
+
+                                            {escrowState.paid && normalizeAddr(escrowState.selected) === normalizeAddr(wallet) && (
+                                                <div className="border border-[#00c8ff40] rounded-xl p-4 bg-[#00c8ff08]">
+                                                    <p className="font-mono text-xs text-[#00c8ff] mb-1">💰 PAYMENT RECEIVED!</p>
+                                                    <p className="text-xs text-[#505060]">The client released payment to you. Contract complete!</p>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
+                                    {/* Dispute form */}
                                     {showDispute && (
                                         <div className="border border-[#ff444440] rounded-xl p-4 bg-[#ff444408] space-y-3">
                                             <p className="font-mono text-xs text-[#ff4444] tracking-wider">⚠ RAISE DISPUTE</p>
                                             <textarea className="input-field w-full rounded-lg px-4 py-3 text-sm resize-none" rows={3} placeholder="Describe why the work doesn't meet requirements..." value={disputeReason} onChange={e => setDisputeReason(e.target.value)} />
                                             <div className="flex gap-3">
-                                                <button onClick={submitDispute} disabled={txStatus === "pending"} className="flex-1 py-2 rounded-lg font-mono text-sm bg-[#ff444420] border border-[#ff444440] text-[#ff4444] hover:bg-[#ff444430]">Submit Dispute</button>
+                                                <button onClick={submitDispute} disabled={txStatus === "pending"} className="flex-1 py-2 rounded-lg font-mono text-sm bg-[#ff444420] border border-[#ff444440] text-[#ff4444]">Submit Dispute</button>
                                                 <button onClick={() => { setShowDispute(false); setDisputeReason(""); }} className="btn-secondary px-4 py-2 rounded-lg font-mono text-sm">Cancel</button>
                                             </div>
                                         </div>
@@ -843,16 +819,7 @@ export default function Home() {
                                                         {c.description && <p className="text-xs text-[#505060] truncate">{c.description}</p>}
                                                         <p className="text-xs text-[#404050] mt-1">{new Date(c.savedAt).toLocaleDateString()}{c.amount ? ` · ${c.amount} GEN` : ""}</p>
                                                     </div>
-                                                    <button
-                                                        className="btn-primary px-4 py-2 rounded-lg font-mono text-xs"
-                                                        onClick={() => {
-                                                            setContractAddr(c.address);
-                                                            setEscrowState(null);
-                                                            setTab("manage");
-                                                        }}
-                                                    >
-                                                        Apply for this Job →
-                                                    </button>
+                                                    <button onClick={() => { setContractAddr(c.address); setEscrowState(null); setTab("manage"); }} className="btn-secondary px-3 py-2 rounded-lg font-mono text-xs shrink-0">Manage →</button>
                                                 </div>
                                             ))}
                                         </div>
@@ -864,41 +831,37 @@ export default function Home() {
 
                     {/* ── ABOUT ── */}
                     {tab === "about" && (
-                        <div className="space-y-6">
-                            <div className="grid sm:grid-cols-2 gap-6">
-                                {[
-                                    { icon: "⬡", title: "GenLayer Smart Contracts", desc: "Built on GenLayer's Intelligent Contract platform — Python contracts that can reason, access the internet, and make AI-powered decisions on-chain." },
-                                    { icon: "⊕", title: "Trustless Escrow", desc: "Funds are locked in the contract until work is verified complete. No human intermediary can steal or delay your payment." },
-                                    { icon: "◈", title: "AI Work Verification", desc: "When a freelancer submits their work URL, GenLayer's AI validators fetch the page and verify it matches the job description using consensus." },
-                                    { icon: "⊞", title: "Dispute Resolution", desc: "If client and freelancer disagree, raise a dispute. Multiple AI validators independently review the evidence and reach a binding consensus." },
-                                ].map((item) => (
-                                    <div key={item.title} className="card rounded-xl p-6 glow-border">
-                                        <div className="text-[#00ff88] text-2xl mb-3">{item.icon}</div>
-                                        <h3 className="font-mono font-bold text-sm mb-2">{item.title}</h3>
-                                        <p className="text-sm text-[#505060] leading-relaxed">{item.desc}</p>
-                                    </div>
-                                ))}
-                            </div>
+                        <div className="grid sm:grid-cols-2 gap-6">
+                            {[
+                                { icon: "⬡", title: "GenLayer Smart Contracts", desc: "Built on GenLayer's Intelligent Contract platform — Python contracts that can reason, access the internet, and make AI-powered decisions on-chain." },
+                                { icon: "⊕", title: "Trustless Escrow", desc: "Funds are locked in the contract until work is verified complete. No human intermediary can steal or delay your payment." },
+                                { icon: "◈", title: "AI Work Verification", desc: "When a freelancer submits their work URL, GenLayer's AI validators fetch the page and verify it matches the job description." },
+                                { icon: "⊞", title: "Dispute Resolution", desc: "If client and freelancer disagree, raise a dispute. Multiple AI validators independently review the evidence and reach a binding consensus." },
+                            ].map((item) => (
+                                <div key={item.title} className="card rounded-xl p-6 glow-border">
+                                    <div className="text-[#00ff88] text-2xl mb-3">{item.icon}</div>
+                                    <h3 className="font-mono font-bold text-sm mb-2">{item.title}</h3>
+                                    <p className="text-sm text-[#505060] leading-relaxed">{item.desc}</p>
+                                </div>
+                            ))}
                         </div>
                     )}
                 </div>
 
-                {
-                    txStatus !== "idle" && (
-                        <div className={`fixed bottom-6 right-6 max-w-sm p-4 rounded-xl font-mono text-sm border animate-fade-up z-50 ${txStatus === "pending" ? "bg-[#0f0f1a] border-[#ffa50040] text-[#ffa500]" : txStatus === "success" ? "bg-[#0f0f1a] border-[#00ff8840] text-[#00ff88]" : "bg-[#0f0f1a] border-[#ff444440] text-[#ff4444]"}`}>
-                            <div className="flex items-start gap-3">
-                                <span className="text-lg mt-0.5">{txStatus === "pending" ? "⟳" : txStatus === "success" ? "✓" : "✗"}</span>
-                                <div>
-                                    <p className="text-xs opacity-60 mb-1">{txStatus === "pending" ? "PENDING" : txStatus === "success" ? "SUCCESS" : "ERROR"}</p>
-                                    <p className="text-xs leading-relaxed break-all">{txMsg}</p>
-                                    {txHash && <p className="text-xs opacity-50 mt-1 break-all">{short(txHash)}</p>}
-                                </div>
-                                <button onClick={() => { setTxStatus("idle"); setTxMsg(""); }} className="text-xs opacity-40 hover:opacity-80 ml-auto shrink-0">✕</button>
+                {txStatus !== "idle" && (
+                    <div className={`fixed bottom-6 right-6 max-w-sm p-4 rounded-xl font-mono text-sm border animate-fade-up z-50 ${txStatus === "pending" ? "bg-[#0f0f1a] border-[#ffa50040] text-[#ffa500]" : txStatus === "success" ? "bg-[#0f0f1a] border-[#00ff8840] text-[#00ff88]" : "bg-[#0f0f1a] border-[#ff444440] text-[#ff4444]"}`}>
+                        <div className="flex items-start gap-3">
+                            <span className="text-lg mt-0.5">{txStatus === "pending" ? "⟳" : txStatus === "success" ? "✓" : "✗"}</span>
+                            <div>
+                                <p className="text-xs opacity-60 mb-1">{txStatus === "pending" ? "PENDING" : txStatus === "success" ? "SUCCESS" : "ERROR"}</p>
+                                <p className="text-xs leading-relaxed break-all">{txMsg}</p>
+                                {txHash && <p className="text-xs opacity-50 mt-1 break-all">{short(txHash)}</p>}
                             </div>
+                            <button onClick={() => { setTxStatus("idle"); setTxMsg(""); }} className="text-xs opacity-40 hover:opacity-80 ml-auto shrink-0">✕</button>
                         </div>
-                    )
-                }
-            </main >
+                    </div>
+                )}
+            </main>
 
             <footer className="border-t border-[#1a1a2e] mt-20 py-8">
                 <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -910,7 +873,7 @@ export default function Home() {
                     </div>
                 </div>
             </footer>
-        </div >
+        </div>
     );
 }
 
@@ -918,72 +881,70 @@ function getContractCode() {
     return `# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
+import json
 
 class Escrow(gl.Contract):
     client: Address
-    freelancer: Address
     amount: u128
-    completed: bool
-    paid: bool
     description: str
-    work_url: str
+    paid: bool
+    submissions: str
+    selected: str
 
-    def __init__(self, freelancer: str, amount: u128, description: str):
+    def __init__(self, amount: u128, description: str):
         self.client = gl.message.sender_address
-        self.freelancer = Address(freelancer)
         self.amount = amount
-        self.completed = False
-        self.paid = False
         self.description = description
-        self.work_url = ""
+        self.paid = False
+        self.submissions = "[]"
+        self.selected = ""
 
     @gl.public.write
-    def mark_complete(self, work_url: str):
-        if self.freelancer == Address("0x0000000000000000000000000000000000000000"):
-            self.freelancer = gl.message.sender_address
+    def submit_work(self, work_url: str):
+        subs = json.loads(self.submissions)
+        subs.append({"freelancer": gl.message.sender_address.as_hex, "url": work_url})
+        self.submissions = json.dumps(subs)
 
-        assert gl.message.sender_address == self.freelancer, "Not your job"
-
-        self.work_url = work_url
-        self.completed = True
+    @gl.public.write
+    def select_winner(self, freelancer: str):
+        assert gl.message.sender_address == self.client, "Only client"
+        self.selected = freelancer
 
     @gl.public.write
     def release_payment(self):
-        assert gl.message.sender_address == self.client, "Only client can release"
-        assert self.completed == True, "Work not completed"
-        assert self._ai_verify_work(), "AI could not verify work meets requirements"
+        assert gl.message.sender_address == self.client, "Only client"
+        assert self.selected != "", "No winner selected"
+        assert self._ai_verify(self.selected), "AI could not verify work"
         self.paid = True
 
     @gl.public.view
     def get_status(self) -> dict:
         return {
             "client": self.client.as_hex,
-            "freelancer": self.freelancer.as_hex,
             "amount": int(self.amount),
-            "completed": self.completed,
-            "paid": self.paid,
             "description": self.description,
-            "work_url": self.work_url,
+            "paid": self.paid,
+            "submissions": json.loads(self.submissions),
+            "selected": self.selected,
         }
 
-    def _ai_verify_work(self) -> bool:
-        if not self.work_url:
-            return False
-        description = self.description
-        work_url = self.work_url
-        def check():
-            web_data = gl.get_webpage(work_url, mode="text")
-            result = gl.exec_prompt(
-                f"""
-                Job description: {description}
-                Work submitted URL: {work_url}
-                Content found at URL: {web_data}
-                Does the submitted work reasonably fulfill the job description?
-                Answer ONLY with YES or NO, nothing else.
-                """
-            )
-            return result.strip().upper()[:3]
-        verdict = gl.eq_principle_strict_eq(check)
-        return verdict == "YES"
+    def _ai_verify(self, freelancer: str) -> bool:
+        subs = json.loads(self.submissions)
+        for s in subs:
+            if s["freelancer"] == freelancer:
+                work_url = s["url"]
+                description = self.description
+                def check():
+                    web = gl.get_webpage(work_url, mode="text")
+                    result = gl.exec_prompt(
+                        f"""Job description: {description}
+Work URL: {work_url}
+Content: {web}
+Does this work fulfill the job description? Answer ONLY YES or NO."""
+                    )
+                    return result.strip().upper()[:3]
+                verdict = gl.eq_principle_strict_eq(check)
+                return verdict == "YES"
+        return False
 `;
 }

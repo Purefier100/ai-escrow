@@ -131,6 +131,20 @@ export default function Home() {
         setMyContracts(mine);
     }, [wallet, tab]);
 
+
+    useEffect(() => {
+        if (tab !== "listings") return;
+        const interval = setInterval(() => { loadJobs(); }, 10000);
+        return () => clearInterval(interval);
+    }, [tab, loadJobs]);
+
+
+    useEffect(() => {
+        if (tab !== "manage" || !contractAddr || contractAddr === CONTRACT_ADDRESS) return;
+        const interval = setInterval(() => { fetchState(false); }, 10000);
+        return () => clearInterval(interval);
+    }, [tab, contractAddr]);
+
     const switchToGenLayer = async () => {
         try {
             await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xF22F" }] });
@@ -207,6 +221,8 @@ export default function Home() {
             setJobTitle(""); setDescription(""); setAmount(""); setJobSkills("");
             setPostingJob(false);
             await loadJobs();
+            setTimeout(() => loadJobs(), 8000);
+            setTimeout(() => loadJobs(), 15000);
         } catch (e: any) {
             setTxStatus("error");
             setTxMsg(e.message || "Failed");
@@ -294,7 +310,9 @@ export default function Home() {
             setTxStatus("success");
             setTxMsg("✓ Work submitted! Waiting for client to review.");
             setWorkUrl("");
-            setTimeout(() => fetchState(true), 2000);
+            setTimeout(() => fetchState(false), 5000);
+            setTimeout(() => fetchState(false), 10000);
+            setTimeout(() => fetchState(false), 18000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -315,7 +333,9 @@ export default function Home() {
             });
             setTxStatus("success");
             setTxMsg("✓ Winner selected!");
-            setTimeout(() => fetchState(true), 2000);
+            setTimeout(() => fetchState(false), 5000);
+            setTimeout(() => fetchState(false), 10000);
+            setTimeout(() => fetchState(false), 18000);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -340,7 +360,9 @@ export default function Home() {
             setTxMsg("✓ Payment released!");
             updateContractStatus(contractAddr, "paid");
             if (currentJobId !== null) await deleteJob(currentJobId);
-            setTimeout(() => fetchState(false), 2000);
+            setTimeout(() => fetchState(false), 5000);
+            setTimeout(() => loadJobs(), 5000);
+            setTimeout(() => fetchState(false), 12000);
         } catch (e: any) {
             setTxStatus("error");
             setTxMsg(e.message || "Transaction failed");

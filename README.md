@@ -141,8 +141,8 @@ ChainEscrow replaces that with:
 
 ## 📬 Contact
 
-Twitter / X: *(Add your handle)*
-Email: *(optional)*
+Twitter: purefier1 https://x.com/Purefier1
+Email: ikpeemediong100@gmail.com
 
 ---
 

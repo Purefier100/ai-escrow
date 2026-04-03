@@ -763,7 +763,9 @@ export default function Home() {
                                                     <p className="font-mono text-xs text-[#00ff88] mb-1">✓ YOUR WORK IS SUBMITTED</p>
                                                     <a href={escrowState.submissions.find(s => normalizeAddr(s.freelancer) === normalizeAddr(wallet))?.url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#4488ff] underline">View your submission</a>
                                                     <p className="text-xs text-[#505060] mt-1">
-                                                        {escrowState.selected === wallet ? "🎉 You were selected as the winner! Waiting for payment release." : "Waiting for client to review and select a winner."}
+                                                        {escrowState.selected === wallet
+                                                            ? `🎉 You were selected as the winner! You will receive ${escrowState.amount} GEN when client releases payment.`
+                                                            : "Waiting for client to review and select a winner."}
                                                     </p>
                                                 </div>
                                             )}

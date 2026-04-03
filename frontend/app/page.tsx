@@ -221,8 +221,6 @@ export default function Home() {
             setJobTitle(""); setDescription(""); setAmount(""); setJobSkills("");
             setPostingJob(false);
             await loadJobs();
-            setTimeout(() => loadJobs(), 8000);
-            setTimeout(() => loadJobs(), 15000);
         } catch (e: any) {
             setTxStatus("error");
             setTxMsg(e.message || "Failed");
@@ -310,9 +308,7 @@ export default function Home() {
             setTxStatus("success");
             setTxMsg("✓ Work submitted! Waiting for client to review.");
             setWorkUrl("");
-            setTimeout(() => fetchState(false), 5000);
-            setTimeout(() => fetchState(false), 10000);
-            setTimeout(() => fetchState(false), 18000);
+            await fetchState(false);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -333,9 +329,7 @@ export default function Home() {
             });
             setTxStatus("success");
             setTxMsg("✓ Winner selected!");
-            setTimeout(() => fetchState(false), 5000);
-            setTimeout(() => fetchState(false), 10000);
-            setTimeout(() => fetchState(false), 18000);
+            await fetchState(false);
         } catch (e: unknown) {
             setTxStatus("error");
             setTxMsg(e instanceof Error ? e.message : "Transaction failed");
@@ -360,9 +354,8 @@ export default function Home() {
             setTxMsg("✓ Payment released!");
             updateContractStatus(contractAddr, "paid");
             if (currentJobId !== null) await deleteJob(currentJobId);
-            setTimeout(() => fetchState(false), 5000);
-            setTimeout(() => loadJobs(), 5000);
-            setTimeout(() => fetchState(false), 12000);
+            await fetchState(false);
+            await loadJobs();
         } catch (e: any) {
             setTxStatus("error");
             setTxMsg(e.message || "Transaction failed");
